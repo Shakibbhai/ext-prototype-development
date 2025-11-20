@@ -666,10 +666,10 @@ export class WordCaptureStrategy implements CaptureStrategy {
             const age = src.ts ? `${Math.max(0, Date.now() - src.ts)}ms` : 'unknown';
             const title = src.title || '';
             const url = src.url || '';
-            const copiedText = src.text ? src.text.substring(0, 200) : '';
+            const copiedText = src.text || '';
             
             // Get the pasted text from clipboard
-            const pastedText = clipboardData ? (clipboardData.getData('text/plain') || '').substring(0, 200) : '';
+            const pastedText = clipboardData ? (clipboardData.getData('text/plain') || '') : '';
             
             console.log(
               `%c[Clipboard Source Info]%c\n` +

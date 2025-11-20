@@ -30,14 +30,12 @@ if (window !== window.top) {
 // Initialize strategy and manager
 const wordStrategy = WordCaptureStrategy.instance;
 const captureManager = SimpleCaptureManager.instance;
-// Initialize UI panel (once) in top frame only to avoid duplicates
-if (window === window.top) {
-  try {
-    (window as any).wordCapturePanel = ClipboardPanel.instance;
-    console.log('[Word Capture] ClipboardPanel injected');
-  } catch (e) {
-    console.warn('[Word Capture] Failed to init ClipboardPanel', e);
-  }
+// Initialize UI panel in every frame (Word editor often lives in iframe)
+try {
+  (window as any).wordCapturePanel = ClipboardPanel.instance;
+  console.log('[Word Capture] ClipboardPanel injected');
+} catch (e) {
+  console.warn('[Word Capture] Failed to init ClipboardPanel', e);
 }
 
 // Register strategy
