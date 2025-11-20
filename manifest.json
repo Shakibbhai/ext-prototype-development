@@ -1,0 +1,38 @@
+{
+  "manifest_version": 3,
+  "name": "Word Online Capture Strategy Prototype",
+  "version": "1.0.0",
+  "description": "Prototype extension for capturing user input events in Microsoft Word 365 Online",
+  "permissions": [
+    "activeTab",
+    "storage"
+  ],
+  "host_permissions": [
+    "*://*.office.com/*",
+    "*://*.officeapps.live.com/*",
+    "*://*.sharepoint.com/*",
+    "*://*.live.com/*",
+    "*://*.microsoft.com/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": [
+        "*://*.office.com/*",
+        "*://*.officeapps.live.com/*",
+        "*://*.sharepoint.com/*",
+        "*://*.live.com/*",
+        "*://*.microsoft.com/*"
+      ],
+      "js": ["content-script.js"],
+      "run_at": "document_idle",
+      "all_frames": true
+    }
+    ,
+    {
+      "matches": ["<all_urls>"],
+      "js": ["clipboard-writer.js"],
+      "run_at": "document_idle",
+      "all_frames": true
+    }
+  ]
+}

@@ -1,0 +1,22 @@
+{
+  "name": "word-capture-ext",
+  "version": "1.0.0",
+  "description": "Microsoft Word 365 Online Capture Strategy Prototype",
+  "main": "content-script.js",
+  "scripts": {
+    "build": "tsc && node build.js",
+    "watch": "tsc --watch",
+    "clean": "rm -rf dist content-script.js"
+  },
+  "keywords": [
+    "word",
+    "capture",
+    "browser-extension",
+    "typescript"
+  ],
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "typescript": "^5.0.0"
+  }
+}
