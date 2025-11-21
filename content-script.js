@@ -1,6 +1,6 @@
 // ============================================
 // Word Capture Extension - Bundled Content Script
-// Generated: 2025-11-20T13:37:30.636Z
+// Generated: 2025-11-20T14:01:08.250Z
 // ============================================
 
 (function() {
@@ -426,6 +426,18 @@ class WordCaptureStrategy {
                 document.removeEventListener('copy', globalCopy, true);
                 document.removeEventListener('cut', globalCut, true);
             });
+            // Also attach to iframe document if it's different from main document
+            if (this.editorDocument && this.editorDocument !== document) {
+                this.editorDocument.addEventListener('copy', globalCopy, true);
+                this.editorDocument.addEventListener('cut', globalCut, true);
+                this.cleanupFunctions.push(() => {
+                    if (this.editorDocument) {
+                        this.editorDocument.removeEventListener('copy', globalCopy, true);
+                        this.editorDocument.removeEventListener('cut', globalCut, true);
+                    }
+                });
+                this.log('Copy/cut listeners attached to iframe document');
+            }
         }
         catch (e) {
             // ignore if attaching global listeners fails due to CSP or other issues
@@ -695,12 +707,24 @@ class WordCaptureStrategy {
             const payload = {
                 text: (text || '').slice(0, 2000),
                 url: location.href,
-                title: document.title || '',
+                title: document.title || 'Word',
                 ts: Date.now()
             };
             this.storeLastClipboard(payload);
             try {
-                console.log(`[clipboard-writer] stored __lastClipboard__ -> url=${payload.url} title="${payload.title}" textSnippet="${(payload.text || '').slice(0, 200)}"`);
+                console.log(`[Word Capture] Copy/Cut detected -> text="${(payload.text || '').slice(0, 100)}" chars=${payload.text.length}`);
+                // Also immediately show in UI panel
+                const panel = window.wordCapturePanel;
+                if (panel && typeof panel.addClipboardSource === 'function' && payload.text) {
+                    panel.addClipboardSource({
+                        url: payload.url,
+                        title: payload.title,
+                        copied: payload.text,
+                        pasted: '',
+                        age: '0ms',
+                        timestamp: payload.ts
+                    });
+                }
             }
             catch (e) { }
         }

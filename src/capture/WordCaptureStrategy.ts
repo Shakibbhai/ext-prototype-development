@@ -666,10 +666,10 @@ export class WordCaptureStrategy implements CaptureStrategy {
             const age = src.ts ? `${Math.max(0, Date.now() - src.ts)}ms` : 'unknown';
             const title = src.title || '';
             const url = src.url || '';
-            const copiedText = src.text || '';
+            const copiedText = src.text ? src.text.substring(0, 200) : '';
             
             // Get the pasted text from clipboard
-            const pastedText = clipboardData ? (clipboardData.getData('text/plain') || '') : '';
+            const pastedText = clipboardData ? (clipboardData.getData('text/plain') || '').substring(0, 200) : '';
             
             console.log(
               `%c[Clipboard Source Info]%c\n` +
@@ -683,20 +683,6 @@ export class WordCaptureStrategy implements CaptureStrategy {
               'text-decoration: underline; font-weight: bold;',
               'text-decoration: none; font-weight: normal;'
             );
-            // Forward clipboard source info to panel UI if available
-            try {
-              const panel = (window as any).wordCapturePanel;
-              if (panel && typeof panel.addClipboardSource === 'function') {
-                panel.addClipboardSource({
-                  url,
-                  title,
-                  copied: copiedText,
-                  pasted: pastedText,
-                  age,
-                  timestamp: Date.now()
-                });
-              }
-            } catch (e) {}
           } catch (e) {}
         };
 
@@ -806,13 +792,6 @@ export class WordCaptureStrategy implements CaptureStrategy {
   private logEvent(event: LogEvent): void {
     const style = 'color: #00a67e; font-weight: bold;';
     console.log('%c[Word Capture Event]', style, event);
-    // Forward to UI panel if present
-    try {
-      const panel = (window as any).wordCapturePanel;
-      if (panel && typeof panel.addEvent === 'function') {
-        panel.addEvent(event);
-      }
-    } catch (e) {}
   }
 
   cleanup(): void {
