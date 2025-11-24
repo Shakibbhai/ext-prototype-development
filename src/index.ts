@@ -30,10 +30,12 @@ if (window !== window.top) {
 // Initialize strategy and manager
 const wordStrategy = WordCaptureStrategy.instance;
 const captureManager = SimpleCaptureManager.instance;
-// Initialize UI panel in every frame (Word editor often lives in iframe)
+
+// Initialize UI panel in every frame
+// But only the iframe panel will be visible (top window panel is hidden via CSS)
 try {
   (window as any).wordCapturePanel = ClipboardPanel.instance;
-  console.log('[Word Capture] ClipboardPanel injected');
+  console.log('[Word Capture] ClipboardPanel created in', window === window.top ? 'TOP window' : 'IFRAME');
 } catch (e) {
   console.warn('[Word Capture] Failed to init ClipboardPanel', e);
 }

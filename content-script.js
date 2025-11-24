@@ -1,6 +1,6 @@
 // ============================================
 // Word Capture Extension - Bundled Content Script
-// Generated: 2025-11-20T14:01:08.250Z
+// Generated: 2025-11-21T13:45:53.363Z
 // ============================================
 
 (function() {
@@ -70,6 +70,8 @@ class WordCaptureStrategy {
         // Text tracking for diff-based capture
         this.previousText = '';
         this.isProcessingChange = false;
+        // Track last extracted text for reference
+        this.previousEditorText = '';
         this.queryCache = [];
         this.log('WordCaptureStrategy constructed');
     }
@@ -383,6 +385,8 @@ class WordCaptureStrategy {
             return;
         }
         this.log('Attaching event listeners to editor');
+        console.log('[Word Capture] Editor element:', this.editorElement);
+        console.log('[Word Capture] Editor has content:', !!this.editorElement.textContent);
         const keydownHandler = (e) => this.handleKeyEvent(e);
         const keyupHandler = (e) => this.handleKeyEvent(e);
         const keypressHandler = (e) => this.handleKeyEvent(e);
@@ -426,18 +430,6 @@ class WordCaptureStrategy {
                 document.removeEventListener('copy', globalCopy, true);
                 document.removeEventListener('cut', globalCut, true);
             });
-            // Also attach to iframe document if it's different from main document
-            if (this.editorDocument && this.editorDocument !== document) {
-                this.editorDocument.addEventListener('copy', globalCopy, true);
-                this.editorDocument.addEventListener('cut', globalCut, true);
-                this.cleanupFunctions.push(() => {
-                    if (this.editorDocument) {
-                        this.editorDocument.removeEventListener('copy', globalCopy, true);
-                        this.editorDocument.removeEventListener('cut', globalCut, true);
-                    }
-                });
-                this.log('Copy/cut listeners attached to iframe document');
-            }
         }
         catch (e) {
             // ignore if attaching global listeners fails due to CSP or other issues
@@ -569,6 +561,10 @@ class WordCaptureStrategy {
         const target = event.target;
         if (!this.isWithinEditor(target))
             return;
+        // Update typing display on keyup to capture all changes including backspace
+        if (event.type === 'keyup') {
+            this.updateTypingDisplay();
+        }
         this.logEvent({
             type: event.type,
             timestamp: Date.now(),
@@ -582,6 +578,10 @@ class WordCaptureStrategy {
         const target = event.target;
         if (!this.isWithinEditor(target))
             return;
+        // Update real-time typing display in UI panel
+        if (event.type === 'input') {
+            this.updateTypingDisplay();
+        }
         // removed temporarily for log simplification
         // this.logEvent({
         //   type: event.type as 'input' | 'beforeinput',
@@ -591,6 +591,40 @@ class WordCaptureStrategy {
         //   targetTag: target.tagName,
         //   selection: this.getSelectionRangeSync()
         // });
+    }
+    updateTypingDisplay() {
+        try {
+            const panel = window.wordCapturePanel;
+            if (panel && typeof panel.updateTypedText === 'function' && this.editorElement) {
+                // Try multiple extraction methods
+                let text = '';
+                // Method 1: innerText (best for preserving formatting)
+                if (this.editorElement.innerText) {
+                    text = this.editorElement.innerText;
+                }
+                // Method 2: textContent fallback
+                else if (this.editorElement.textContent) {
+                    text = this.editorElement.textContent;
+                }
+                // Method 3: innerHTML as last resort, strip tags
+                else if (this.editorElement.innerHTML) {
+                    text = this.editorElement.innerHTML.replace(/<[^>]*>/g, ' ').trim();
+                }
+                console.log('[Word Capture] Extracted text length:', text.length, 'Preview:', text.substring(0, 50));
+                panel.updateTypedText(text);
+                this.previousEditorText = text;
+            }
+            else {
+                console.warn('[Word Capture] Panel or editor not available', {
+                    hasPanel: !!panel,
+                    hasUpdateMethod: !!(panel && panel.updateTypedText),
+                    hasEditor: !!this.editorElement
+                });
+            }
+        }
+        catch (e) {
+            console.error('[Word Capture] Error in updateTypingDisplay:', e);
+        }
     }
     handleClipboardEvent(event) {
         const target = event.target;
@@ -615,24 +649,33 @@ class WordCaptureStrategy {
             try {
                 const KEY = '__lastClipboard__';
                 const chromeApi = globalThis.chrome || window.chrome || null;
+                const pastedText = clipboardData ? (clipboardData.getData('text/plain') || '') : '';
                 const handleSrc = (src) => {
                     try {
                         if (!src)
                             return;
+                        // Check if paste is from external source (not from Word document itself)
+                        const isExternalSource = src.url && !src.url.includes(location.hostname);
                         const age = src.ts ? `${Math.max(0, Date.now() - src.ts)}ms` : 'unknown';
                         const title = src.title || '';
                         const url = src.url || '';
                         const copiedText = src.text || '';
-                        // Get the pasted text from clipboard
-                        const pastedText = clipboardData ? (clipboardData.getData('text/plain') || '') : '';
                         console.log(`%c[Clipboard Source Info]%c\n` +
                             `From: ${url || 'unknown'}\n` +
                             `Title: %c${title}%c\n` +
                             `Copied: "${copiedText}"\n` +
                             `Pasted: "${pastedText}"\n` +
                             `Age: ${age}`, 'color: #00a67e; font-weight: bold; font-size: 14px;', 'color: inherit;', 'text-decoration: underline; font-weight: bold;', 'text-decoration: none; font-weight: normal;');
-                        // Forward clipboard source info to panel UI if available
-                        try {
+                        // Only process external source with custom highlighted insertion
+                        if (isExternalSource) {
+                            try {
+                                // Prevent default paste so Word doesn't insert unwrapped content
+                                event.preventDefault();
+                            }
+                            catch (e) { }
+                            // Insert highlighted span at current selection
+                            this.insertHighlightedPaste(pastedText, url);
+                            // Add to floating panel
                             const panel = window.wordCapturePanel;
                             if (panel && typeof panel.addClipboardSource === 'function') {
                                 panel.addClipboardSource({
@@ -644,8 +687,9 @@ class WordCaptureStrategy {
                                     timestamp: Date.now()
                                 });
                             }
+                            // Refresh typing display after insertion
+                            this.updateTypingDisplay();
                         }
-                        catch (e) { }
                     }
                     catch (e) { }
                 };
@@ -683,6 +727,54 @@ class WordCaptureStrategy {
             catch (e) { }
         }
     }
+    // Direct insertion of highlighted pasted text at current selection
+    insertHighlightedPaste(pastedText, sourceUrl) {
+        try {
+            if (!this.editorDocument || !this.editorElement || !pastedText)
+                return;
+            const doc = this.editorDocument;
+            const selection = doc.getSelection();
+            if (!selection || selection.rangeCount === 0)
+                return;
+            const range = selection.getRangeAt(0);
+            // Delete current selection contents (default paste target)
+            try {
+                range.deleteContents();
+            }
+            catch (e) { }
+            const span = doc.createElement('span');
+            span.style.backgroundColor = '#fef3c7';
+            span.style.borderBottom = '2px solid #fbbf24';
+            span.style.cursor = 'pointer';
+            span.style.padding = '0 2px';
+            span.title = sourceUrl ? `Open source: ${sourceUrl}` : 'Pasted text';
+            if (sourceUrl)
+                span.dataset.sourceUrl = sourceUrl;
+            // Preserve line breaks by inserting <br> elements
+            const lines = pastedText.split(/\r?\n/);
+            lines.forEach((line, idx) => {
+                span.appendChild(doc.createTextNode(line));
+                if (idx < lines.length - 1)
+                    span.appendChild(doc.createElement('br'));
+            });
+            span.addEventListener('click', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                if (sourceUrl)
+                    window.open(sourceUrl, '_blank');
+            });
+            range.insertNode(span);
+            // Move caret after inserted span
+            range.setStartAfter(span);
+            range.setEndAfter(span);
+            selection.removeAllRanges();
+            selection.addRange(range);
+            this.log('Inserted highlighted pasted text span');
+        }
+        catch (e) {
+            this.log('Failed to insert highlighted paste: ' + e);
+        }
+    }
     /**
      * Handle copy / cut events and store minimal metadata so paste handler can
      * later log where the content came from.
@@ -707,24 +799,12 @@ class WordCaptureStrategy {
             const payload = {
                 text: (text || '').slice(0, 2000),
                 url: location.href,
-                title: document.title || 'Word',
+                title: document.title || '',
                 ts: Date.now()
             };
             this.storeLastClipboard(payload);
             try {
-                console.log(`[Word Capture] Copy/Cut detected -> text="${(payload.text || '').slice(0, 100)}" chars=${payload.text.length}`);
-                // Also immediately show in UI panel
-                const panel = window.wordCapturePanel;
-                if (panel && typeof panel.addClipboardSource === 'function' && payload.text) {
-                    panel.addClipboardSource({
-                        url: payload.url,
-                        title: payload.title,
-                        copied: payload.text,
-                        pasted: '',
-                        age: '0ms',
-                        timestamp: payload.ts
-                    });
-                }
+                console.log(`[clipboard-writer] stored __lastClipboard__ -> url=${payload.url} title="${payload.title}" textSnippet="${(payload.text || '').slice(0, 200)}"`);
             }
             catch (e) { }
         }
@@ -771,14 +851,6 @@ class WordCaptureStrategy {
     logEvent(event) {
         const style = 'color: #00a67e; font-weight: bold;';
         console.log('%c[Word Capture Event]', style, event);
-        // Forward to UI panel if present
-        try {
-            const panel = window.wordCapturePanel;
-            if (panel && typeof panel.addEvent === 'function') {
-                panel.addEvent(event);
-            }
-        }
-        catch (e) { }
     }
     cleanup() {
         this.log('Cleaning up');
@@ -823,11 +895,12 @@ class WordCaptureStrategy {
 // ClipboardPanel.js
 // ============================================
 /**
- * Floating in-page panel to visualize clipboard source info and Word capture events.
- * Injected via content script (index.ts) so no additional extension pages needed.
+ * Floating in-page panel to visualize real-time typing and pasted clipboard content.
+ * Shows what user types in Word and highlights pasted content from external sources.
  */
 class ClipboardPanel {
     static get instance() {
+        // Create separate instance for each window/frame
         if (!window._clipboardPanelInstance) {
             window._clipboardPanelInstance = new ClipboardPanel();
         }
@@ -835,13 +908,19 @@ class ClipboardPanel {
     }
     constructor() {
         this.isCollapsed = false;
-        this.maxItems = 100;
+        this.isMinimized = false;
+        this.maxPastedItems = 50;
+        this.currentTypedText = '';
+        this.pastedTexts = []; // Track pasted text snippets
+        this.pastedMetadata = new Map(); // Track metadata for tooltips
         this.createUI();
     }
     createUI() {
-        // Avoid injecting multiple times
-        if (document.getElementById('__wc_clipboard_panel'))
+        // Avoid injecting multiple times in same window
+        if (document.getElementById('__wc_clipboard_panel')) {
+            console.log('[ClipboardPanel] Panel already exists in this window');
             return;
+        }
         this.container = document.createElement('div');
         this.container.id = '__wc_clipboard_panel';
         Object.assign(this.container.style, {
@@ -849,189 +928,545 @@ class ClipboardPanel {
             bottom: '12px',
             right: '12px',
             width: '450px',
-            maxHeight: '70vh',
+            maxHeight: '75vh',
             fontFamily: 'Segoe UI, Arial, sans-serif',
-            background: 'rgba(23,23,23,0.95)',
-            color: '#eee',
-            border: '1px solid #00a67e',
-            borderRadius: '8px',
-            boxShadow: '0 4px 16px rgba(0,0,0,0.4)',
+            background: '#ffffff',
+            color: '#1a1a1a',
+            border: '2px solid #2563eb',
+            borderRadius: '10px',
+            boxShadow: '0 8px 24px rgba(37, 99, 235, 0.2)',
             zIndex: '999999',
             display: 'flex',
             flexDirection: 'column',
             overflow: 'hidden'
         });
+        // HIDE panel if this is the TOP window (we only want iframe panel visible)
+        if (window === window.top) {
+            this.container.style.display = 'none';
+            console.log('[ClipboardPanel] Hiding panel in top window');
+        }
+        else {
+            console.log('[ClipboardPanel] Showing panel in iframe');
+        }
         const header = document.createElement('div');
         Object.assign(header.style, {
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'space-between',
-            padding: '6px 10px',
-            background: '#121212',
-            borderBottom: '1px solid #033',
+            padding: '10px 14px',
+            background: 'linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%)',
+            borderBottom: '2px solid #1e40af',
             fontSize: '13px',
             letterSpacing: '0.5px'
         });
         const title = document.createElement('div');
-        title.textContent = 'Clipboard History';
-        Object.assign(title.style, { fontWeight: '600', color: '#00a67e' });
+        title.textContent = 'Word Capture • Live View';
+        Object.assign(title.style, { fontWeight: '600', color: '#ffffff', fontSize: '15px' });
         const buttonsWrap = document.createElement('div');
         Object.assign(buttonsWrap.style, { display: 'flex', gap: '6px' });
-        const collapseBtn = this.makeButton('Hide');
+        const minimizeBtn = this.makeButton('_');
         const clearBtn = this.makeButton('Clear');
+        const collapseBtn = this.makeButton('Hide');
+        minimizeBtn.onclick = () => this.minimize();
         collapseBtn.onclick = () => this.toggle();
         clearBtn.onclick = () => this.clearAll();
+        buttonsWrap.appendChild(minimizeBtn);
         buttonsWrap.appendChild(clearBtn);
         buttonsWrap.appendChild(collapseBtn);
         header.appendChild(title);
         header.appendChild(buttonsWrap);
         const sectionsWrap = document.createElement('div');
         Object.assign(sectionsWrap.style, {
-            display: 'grid',
-            gridTemplateColumns: '1fr',
-            gap: '8px',
-            padding: '8px',
-            overflowY: 'auto'
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '10px',
+            padding: '10px',
+            overflowY: 'auto',
+            maxHeight: 'calc(75vh - 60px)',
+            background: '#f8fafc'
         });
-        // Clipboard Sources section only
-        const sourcesSection = this.makeSection('Clipboard History');
-        this.sourcesList = sourcesSection.querySelector('ul');
-        // Create empty events list for compatibility (not displayed)
-        this.eventsList = document.createElement('ul');
-        sectionsWrap.appendChild(sourcesSection);
+        // Real-time typing section
+        const typingSection = this.makeTypingSection();
+        // Pasted content section
+        const pastedSection = this.makePastedSection();
+        sectionsWrap.appendChild(typingSection);
+        sectionsWrap.appendChild(pastedSection);
         this.container.appendChild(header);
         this.container.appendChild(sectionsWrap);
+        // Append to current window's document
         document.documentElement.appendChild(this.container);
+        console.log('[ClipboardPanel] Panel injected into', window === window.top ? 'TOP window' : 'IFRAME');
     }
     makeButton(label) {
         const btn = document.createElement('button');
         btn.textContent = label;
         Object.assign(btn.style, {
-            background: '#00a67e',
-            color: '#fff',
-            border: 'none',
-            padding: '4px 10px',
+            background: '#ffffff',
+            color: '#2563eb',
+            border: '1px solid #dbeafe',
+            padding: '6px 14px',
             fontSize: '12px',
-            borderRadius: '4px',
-            cursor: 'pointer'
+            borderRadius: '6px',
+            cursor: 'pointer',
+            fontWeight: '600'
         });
-        btn.onmouseenter = () => btn.style.opacity = '0.85';
-        btn.onmouseleave = () => btn.style.opacity = '1';
+        btn.onmouseenter = () => { btn.style.background = '#eff6ff'; };
+        btn.onmouseleave = () => { btn.style.background = '#ffffff'; };
         return btn;
     }
-    makeSection(title) {
+    makeTypingSection() {
         const wrap = document.createElement('div');
+        Object.assign(wrap.style, {
+            background: '#ffffff',
+            borderRadius: '8px',
+            padding: '14px',
+            border: '2px solid #3b82f6',
+            boxShadow: '0 2px 8px rgba(37, 99, 235, 0.1)'
+        });
         const heading = document.createElement('div');
-        heading.textContent = title;
+        heading.textContent = '✍️ LIVE TYPING';
         Object.assign(heading.style, {
             fontSize: '12px',
-            fontWeight: '600',
-            color: '#99e2cd',
-            marginBottom: '4px',
-            textTransform: 'uppercase',
-            letterSpacing: '0.5px'
+            fontWeight: '700',
+            color: '#2563eb',
+            marginBottom: '10px',
+            letterSpacing: '0.8px'
         });
-        const list = document.createElement('ul');
-        Object.assign(list.style, {
-            listStyle: 'none',
-            margin: '0',
-            padding: '0',
+        // Use div instead of textarea for better highlighting
+        this.typingDisplay = document.createElement('div');
+        this.typingDisplay.contentEditable = 'false';
+        Object.assign(this.typingDisplay.style, {
+            width: '100%',
+            minHeight: '200px',
+            height: 'auto',
+            maxHeight: '350px',
+            background: '#ffffff',
+            border: '2px solid #dbeafe',
+            borderRadius: '6px',
+            padding: '10px',
+            color: '#000000',
+            fontSize: '13px',
+            lineHeight: '1.6',
+            fontFamily: 'Segoe UI, Arial, sans-serif',
+            outline: 'none',
+            boxSizing: 'border-box',
+            fontWeight: '500',
+            overflowY: 'auto',
+            overflowX: 'hidden',
+            whiteSpace: 'pre-wrap',
+            wordBreak: 'break-word',
+            display: 'block'
+        });
+        this.typingDisplay.setAttribute('data-placeholder', 'Waiting for typing in Word...');
+        // Add scroll buttons container
+        const scrollButtons = document.createElement('div');
+        Object.assign(scrollButtons.style, {
             display: 'flex',
-            flexDirection: 'column',
-            gap: '4px'
+            gap: '4px',
+            marginTop: '6px',
+            justifyContent: 'flex-end'
+        });
+        const scrollToTop = document.createElement('button');
+        scrollToTop.textContent = '⬆ Top';
+        Object.assign(scrollToTop.style, {
+            background: '#dbeafe',
+            color: '#1e40af',
+            border: '1px solid #93c5fd',
+            padding: '4px 10px',
+            fontSize: '11px',
+            borderRadius: '4px',
+            cursor: 'pointer',
+            fontWeight: '600'
+        });
+        scrollToTop.onclick = () => {
+            this.typingDisplay.scrollTop = 0;
+        };
+        const scrollToBottom = document.createElement('button');
+        scrollToBottom.textContent = '⬇ Bottom';
+        Object.assign(scrollToBottom.style, {
+            background: '#dbeafe',
+            color: '#1e40af',
+            border: '1px solid #93c5fd',
+            padding: '4px 10px',
+            fontSize: '11px',
+            borderRadius: '4px',
+            cursor: 'pointer',
+            fontWeight: '600'
+        });
+        scrollToBottom.onclick = () => {
+            this.typingDisplay.scrollTop = this.typingDisplay.scrollHeight;
+        };
+        scrollButtons.appendChild(scrollToTop);
+        scrollButtons.appendChild(scrollToBottom);
+        // Focus border color
+        this.typingDisplay.addEventListener('focus', () => {
+            this.typingDisplay.style.borderColor = '#3b82f6';
+        });
+        this.typingDisplay.addEventListener('blur', () => {
+            this.typingDisplay.style.borderColor = '#dbeafe';
         });
         wrap.appendChild(heading);
-        wrap.appendChild(list);
+        wrap.appendChild(this.typingDisplay);
+        wrap.appendChild(scrollButtons);
+        return wrap;
+    }
+    makePastedSection() {
+        const wrap = document.createElement('div');
+        Object.assign(wrap.style, {
+            background: '#ffffff',
+            borderRadius: '8px',
+            padding: '12px',
+            border: '2px solid #e5e7eb',
+            boxShadow: '0 1px 4px rgba(0, 0, 0, 0.05)'
+        });
+        const heading = document.createElement('div');
+        heading.textContent = '📋 PASTED FROM EXTERNAL SOURCES';
+        Object.assign(heading.style, {
+            fontSize: '11px',
+            fontWeight: '700',
+            color: '#6b7280',
+            marginBottom: '8px',
+            letterSpacing: '0.8px'
+        });
+        this.pastedList = document.createElement('div');
+        Object.assign(this.pastedList.style, {
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '8px',
+            maxHeight: '180px',
+            overflowY: 'auto',
+            padding: '2px'
+        });
+        wrap.appendChild(heading);
+        wrap.appendChild(this.pastedList);
         return wrap;
     }
     toggle() {
         this.isCollapsed = !this.isCollapsed;
-        this.container.querySelector('button:last-child').textContent = this.isCollapsed ? 'Show' : 'Hide';
-        this.container.style.height = this.isCollapsed ? '32px' : 'auto';
-        const sections = this.container.querySelectorAll('div > div > div');
-        sections.forEach((el, idx) => {
-            if (idx >= 1) {
-                el.style.display = this.isCollapsed ? 'none' : 'block';
+        const btn = this.container.querySelector('button:last-child');
+        btn.textContent = this.isCollapsed ? 'Show' : 'Hide';
+        const sections = this.container.querySelector('div > div:nth-child(2)');
+        if (sections) {
+            sections.style.display = this.isCollapsed ? 'none' : 'flex';
+        }
+    }
+    minimize() {
+        if (!this.isMinimized) {
+            // Minimize - make it MORE visible and larger
+            this.isMinimized = true;
+            this.container.style.width = '120px';
+            this.container.style.height = '60px';
+            this.container.style.background = '#2563eb'; // Solid blue background
+            this.container.style.boxShadow = '0 8px 32px rgba(37, 99, 235, 0.6)';
+            this.container.style.cursor = 'pointer';
+            const title = this.container.querySelector('div > div:first-child');
+            if (title) {
+                title.textContent = '📝 WC';
+                title.style.fontSize = '18px';
+                title.style.textAlign = 'center';
             }
-        });
-    }
-    clearAll() {
-        this.eventsList.innerHTML = '';
-        this.sourcesList.innerHTML = '';
-    }
-    addEvent(e) {
-        const li = document.createElement('li');
-        const time = new Date(e.timestamp).toLocaleTimeString();
-        li.textContent = `${time} ${e.type}${e.key ? ' key=' + e.key : ''}${e.data ? ' data=' + e.data : ''}`;
-        Object.assign(li.style, {
-            padding: '4px 6px',
-            background: '#1e1e1e',
-            borderRadius: '4px',
-            fontSize: '11px',
-            fontFamily: 'monospace'
-        });
-        this.eventsList.prepend(li);
-        this.trim(this.eventsList);
-    }
-    addClipboardSource(info) {
-        // Remove highlight from previous latest
-        const prevLatest = this.sourcesList.querySelector('li[data-latest="true"]');
-        if (prevLatest) {
-            prevLatest.removeAttribute('data-latest');
-            Object.assign(prevLatest.style, {
-                background: '#242424',
-                borderLeft: '4px solid #2d2d2d'
+            const sections = this.container.querySelector('div > div:nth-child(2)');
+            if (sections)
+                sections.style.display = 'none';
+            const btns = this.container.querySelectorAll('button');
+            btns.forEach((btn, idx) => {
+                if (idx === 0) {
+                    btn.textContent = '⬜'; // Restore button with emoji
+                    btn.style.fontSize = '16px';
+                }
+                else {
+                    btn.style.display = 'none';
+                }
+            });
+            // Make entire container clickable to restore
+            this.container.onclick = () => this.minimize();
+        }
+        else {
+            // Restore
+            this.isMinimized = false;
+            this.container.style.width = '340px';
+            this.container.style.height = 'auto';
+            this.container.style.background = '#ffffff';
+            this.container.style.boxShadow = '0 8px 24px rgba(37, 99, 235, 0.2)';
+            this.container.style.cursor = 'default';
+            this.container.onclick = null;
+            const title = this.container.querySelector('div > div:first-child');
+            if (title) {
+                title.textContent = 'Word Capture • Live View';
+                title.style.fontSize = '15px';
+                title.style.textAlign = 'left';
+            }
+            const sections = this.container.querySelector('div > div:nth-child(2)');
+            if (sections)
+                sections.style.display = 'flex';
+            const btns = this.container.querySelectorAll('button');
+            btns.forEach((btn, idx) => {
+                if (idx === 0) {
+                    btn.textContent = '_';
+                    btn.style.fontSize = '12px';
+                }
+                else {
+                    btn.style.display = 'inline-block';
+                }
             });
         }
-        const li = document.createElement('li');
-        li.setAttribute('data-latest', 'true');
+    }
+    clearAll() {
+        this.typingDisplay.textContent = '';
+        this.currentTypedText = '';
+        this.pastedTexts = [];
+        this.pastedList.innerHTML = '';
+    }
+    // Update live typing display with highlighted pasted text
+    updateTypedText(text) {
+        this.currentTypedText = text;
+        if (!text || text.length === 0) {
+            this.typingDisplay.innerHTML = '<span style="color: #9ca3af; font-style: italic;">Waiting for typing in Word...</span>';
+            return;
+        }
+        // Clear and rebuild with highlighting
+        this.typingDisplay.innerHTML = '';
+        if (this.pastedTexts.length === 0) {
+            // No pasted text, just show plain text with proper line breaks
+            const lines = text.split('\n');
+            lines.forEach((line, index) => {
+                this.typingDisplay.appendChild(document.createTextNode(line));
+                if (index < lines.length - 1) {
+                    this.typingDisplay.appendChild(document.createElement('br'));
+                }
+            });
+        }
+        else {
+            // Highlight pasted portions while preserving line breaks
+            // Build fragments by finding all pasted text occurrences
+            let fragments = [];
+            let lastIndex = 0;
+            // Create array of positions where pasted text occurs
+            const pastedOccurrences = [];
+            this.pastedTexts.forEach(pastedSnippet => {
+                const snippet = pastedSnippet.trim();
+                if (!snippet)
+                    return;
+                // Find all occurrences using indexOf loop
+                let searchIndex = 0;
+                while (searchIndex < text.length) {
+                    const foundIndex = text.indexOf(snippet, searchIndex);
+                    if (foundIndex === -1)
+                        break;
+                    pastedOccurrences.push({
+                        start: foundIndex,
+                        end: foundIndex + snippet.length,
+                        pastedText: snippet
+                    });
+                    searchIndex = foundIndex + snippet.length;
+                }
+            });
+            // Sort occurrences by start position
+            pastedOccurrences.sort((a, b) => a.start - b.start);
+            // Build fragments from sorted occurrences
+            pastedOccurrences.forEach(occurrence => {
+                // Add non-pasted text before this occurrence
+                if (lastIndex < occurrence.start) {
+                    fragments.push({
+                        text: text.substring(lastIndex, occurrence.start),
+                        isPasted: false
+                    });
+                }
+                // Add pasted text
+                fragments.push({
+                    text: text.substring(occurrence.start, occurrence.end),
+                    isPasted: true,
+                    originalPastedText: occurrence.pastedText
+                });
+                lastIndex = occurrence.end;
+            });
+            // Add remaining non-pasted text
+            if (lastIndex < text.length) {
+                fragments.push({
+                    text: text.substring(lastIndex),
+                    isPasted: false
+                });
+            }
+            // If no pasted text found, use original
+            if (fragments.length === 0) {
+                fragments = [{ text: text, isPasted: false }];
+            }
+            // Render fragments with proper formatting
+            fragments.forEach(fragment => {
+                const lines = fragment.text.split('\n');
+                lines.forEach((line, lineIdx) => {
+                    if (fragment.isPasted) {
+                        // Highlighted pasted text with tooltip
+                        const pastedSpan = document.createElement('span');
+                        pastedSpan.textContent = line;
+                        pastedSpan.style.cssText = 'background-color: #fef3c7; border-bottom: 2px solid #fbbf24; text-decoration: underline; text-decoration-color: #f59e0b; padding: 2px 4px; border-radius: 3px; cursor: help; position: relative;';
+                        // Get metadata for this pasted text using originalPastedText
+                        const metadataKey = fragment.originalPastedText || fragment.text.trim();
+                        const metadata = this.pastedMetadata.get(metadataKey);
+                        if (metadata) {
+                            // Create tooltip
+                            const tooltip = document.createElement('span');
+                            tooltip.style.cssText = `
+                visibility: hidden;
+                background-color: #1e293b;
+                color: #ffffff;
+                text-align: left;
+                border-radius: 6px;
+                padding: 8px 12px;
+                position: absolute;
+                z-index: 1000000;
+                bottom: 125%;
+                left: 50%;
+                transform: translateX(-50%);
+                width: max-content;
+                max-width: 300px;
+                font-size: 11px;
+                line-height: 1.4;
+                box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+                white-space: normal;
+                word-break: break-word;
+                user-select: text;
+                cursor: text;
+                pointer-events: auto;
+              `;
+                            const titleDiv = document.createElement('div');
+                            titleDiv.style.cssText = 'font-weight: 700; color: #fbbf24; margin-bottom: 4px; font-size: 12px; user-select: text;';
+                            titleDiv.textContent = metadata.title;
+                            const urlDiv = document.createElement('div');
+                            urlDiv.style.cssText = 'color: #94a3b8; font-size: 10px; font-family: monospace; user-select: text; word-break: break-all;';
+                            urlDiv.textContent = metadata.url;
+                            tooltip.appendChild(titleDiv);
+                            tooltip.appendChild(urlDiv);
+                            // Tooltip arrow
+                            const arrow = document.createElement('span');
+                            arrow.style.cssText = `
+                position: absolute;
+                top: 100%;
+                left: 50%;
+                margin-left: -5px;
+                border-width: 5px;
+                border-style: solid;
+                border-color: #1e293b transparent transparent transparent;
+              `;
+                            tooltip.appendChild(arrow);
+                            pastedSpan.appendChild(tooltip);
+                            // Show/hide tooltip on hover - keep visible when hovering tooltip itself
+                            let hideTimeout = null;
+                            pastedSpan.onmouseenter = () => {
+                                if (hideTimeout)
+                                    clearTimeout(hideTimeout);
+                                tooltip.style.visibility = 'visible';
+                                tooltip.style.opacity = '1';
+                            };
+                            pastedSpan.onmouseleave = () => {
+                                hideTimeout = setTimeout(() => {
+                                    tooltip.style.visibility = 'hidden';
+                                    tooltip.style.opacity = '0';
+                                }, 300); // 300ms delay before hiding
+                            };
+                            // Keep tooltip visible when hovering over it
+                            tooltip.onmouseenter = () => {
+                                if (hideTimeout)
+                                    clearTimeout(hideTimeout);
+                                tooltip.style.visibility = 'visible';
+                                tooltip.style.opacity = '1';
+                            };
+                            tooltip.onmouseleave = () => {
+                                tooltip.style.visibility = 'hidden';
+                                tooltip.style.opacity = '0';
+                            };
+                        }
+                        this.typingDisplay.appendChild(pastedSpan);
+                    }
+                    else {
+                        // Normal text
+                        this.typingDisplay.appendChild(document.createTextNode(line));
+                    }
+                    // Add line break if not last line
+                    if (lineIdx < lines.length - 1) {
+                        this.typingDisplay.appendChild(document.createElement('br'));
+                    }
+                });
+            });
+        }
+        // Force scroll to show latest content
+        setTimeout(() => {
+            this.typingDisplay.scrollTop = this.typingDisplay.scrollHeight;
+        }, 10);
+    }
+    // Add pasted content with yellow highlight
+    addClipboardSource(info) {
+        // Track this pasted text for highlighting in live typing section
+        if (info.pasted && info.pasted.trim()) {
+            const pastedText = info.pasted.trim();
+            this.pastedTexts.push(pastedText);
+            // Store metadata for tooltip
+            this.pastedMetadata.set(pastedText, {
+                url: info.url || 'Unknown source',
+                title: info.title || 'Untitled'
+            });
+            // Refresh the display to show highlighting
+            this.updateTypedText(this.currentTypedText);
+        }
+        const item = document.createElement('div');
+        Object.assign(item.style, {
+            background: '#fefce8',
+            border: '2px solid #fbbf24',
+            borderRadius: '8px',
+            padding: '12px',
+            position: 'relative',
+            cursor: 'pointer',
+            transition: 'all 0.2s'
+        });
+        // Make entire card clickable to open source
+        item.onclick = () => {
+            if (info.url) {
+                window.open(info.url, '_blank');
+            }
+        };
+        item.onmouseenter = () => {
+            item.style.transform = 'scale(1.02)';
+            item.style.boxShadow = '0 4px 12px rgba(251, 191, 36, 0.3)';
+        };
+        item.onmouseleave = () => {
+            item.style.transform = 'scale(1)';
+            item.style.boxShadow = 'none';
+        };
         const time = new Date(info.timestamp).toLocaleTimeString();
         const copiedEsc = this.escape(info.copied || '');
         const titleEsc = this.escape(info.title || 'Untitled');
         const urlEsc = this.escape(info.url || '');
-        li.innerHTML = `
-      <div style="font-size:11px; line-height:1.4">
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
-          <span style="color:#00c297;font-weight:700;font-size:12px">${time}</span>
-        </div>
-        
-        <div style="margin-bottom:10px">
-          <div style="font-size:10px;font-weight:700;color:#66d1b8;letter-spacing:.5px;margin-bottom:4px">TITLE:</div>
-          <div style="padding:5px 7px;background:#183d35;border-radius:4px;font-weight:600;color:#9df5e1;border:1px solid #0a6656;font-size:11px">${titleEsc}</div>
-        </div>
-
-        <div style="margin-bottom:10px">
-          <div style="font-size:10px;font-weight:700;color:#66d1b8;letter-spacing:.5px;margin-bottom:4px">SOURCE:</div>
-          <a href="${info.url}" target="_blank" style="display:block;padding:5px 7px;background:#0d3d33;border-radius:4px;color:#7ce8d1;text-decoration:none;word-break:break-all;border:1px solid #066;font-size:10px;max-height:60px;overflow:auto">${urlEsc} ↗</a>
-        </div>
-        
-        <div style="background:#30230f;padding:8px;border-radius:4px;border:1px solid #8a6409;margin-top:10px">
-          <div style="font-size:10px;font-weight:700;color:#ffc86b;letter-spacing:.5px;margin-bottom:4px">TEXT COPIED: <span style="color:#999;font-weight:400">(${copiedEsc.length} chars)</span></div>
-          <div style="word-break:break-word;white-space:pre-wrap;color:#f3d9a6;font-size:11px;line-height:1.5;max-height:900px;overflow-y:auto">${copiedEsc || '<em style="color:#666">(empty)</em>'}</div>
-        </div>
+        item.innerHTML = `
+      <div style="font-size:10px;color:#78716c;margin-bottom:8px;font-weight:600">${time} • Click to open source</div>
+      <div style="margin-bottom:8px">
+        <div style="font-size:10px;font-weight:700;color:#92400e;letter-spacing:.5px;margin-bottom:4px">TITLE:</div>
+        <div style="font-size:12px;color:#713f12;font-weight:600">${titleEsc}</div>
+      </div>
+      <div style="margin-bottom:10px">
+        <div style="font-size:10px;font-weight:700;color:#92400e;letter-spacing:.5px;margin-bottom:4px">SOURCE:</div>
+        <div style="font-size:11px;color:#1d4ed8;text-decoration:underline;word-break:break-all">${urlEsc} ↗</div>
+      </div>
+        <div style="font-size:10px;font-weight:700;color:#92400e;letter-spacing:.5px;margin-bottom:5px">PASTED TEXT: <span style="color:#6b7280;font-weight:400">(${copiedEsc.length} chars)</span></div>
+        <div style="background:#fef9e7;padding:8px;border-radius:4px;color:#44403c;font-size:12px;line-height:1.6;max-height:120px;overflow-y:auto;word-break:break-word;white-space:pre-wrap;border:1px solid #fde68a">${copiedEsc || '<em style="color:#9ca3af">(empty)</em>'}</div>
       </div>
     `;
-        Object.assign(li.style, {
-            padding: '8px 10px 10px 10px',
-            background: '#072822',
-            borderRadius: '6px',
-            fontSize: '11px',
-            fontFamily: 'Segoe UI, Arial',
-            borderLeft: '4px solid #00a67e',
-            boxShadow: '0 2px 6px rgba(0,0,0,0.4)'
-        });
-        this.sourcesList.prepend(li);
-        this.trim(this.sourcesList);
+        this.pastedList.prepend(item);
+        this.trimPastedList();
     }
-    trim(list) {
-        while (list.children.length > this.maxItems) {
-            list.removeChild(list.lastChild);
+    // For backward compatibility with key events (now ignored)
+    addEvent(e) {
+        // No longer used - we track typing via text extraction
+    }
+    trimPastedList() {
+        while (this.pastedList.children.length > this.maxPastedItems) {
+            this.pastedList.removeChild(this.pastedList.lastChild);
         }
     }
     escape(str) {
         return (str || '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', '\'': '&#39;' }[c]));
     }
 }
+ClipboardPanel._instance = null;
 // Expose globally for integration
 window.ClipboardPanel = ClipboardPanel;
 
@@ -1063,10 +1498,11 @@ if (window !== window.top) {
 // Initialize strategy and manager
 const wordStrategy = WordCaptureStrategy.instance;
 const captureManager = SimpleCaptureManager.instance;
-// Initialize UI panel in every frame (Word editor often lives in iframe)
+// Initialize UI panel in every frame
+// But only the iframe panel will be visible (top window panel is hidden via CSS)
 try {
     window.wordCapturePanel = ClipboardPanel.instance;
-    console.log('[Word Capture] ClipboardPanel injected');
+    console.log('[Word Capture] ClipboardPanel created in', window === window.top ? 'TOP window' : 'IFRAME');
 }
 catch (e) {
     console.warn('[Word Capture] Failed to init ClipboardPanel', e);

@@ -22,6 +22,8 @@ export class WordCaptureStrategy implements CaptureStrategy {
   // Text tracking for diff-based capture
   private previousText: string = '';
   private isProcessingChange: boolean = false;
+  // Track last extracted text for reference
+  private previousEditorText: string = '';
   
   readonly queryCache: HTMLElement[] = [];
 
@@ -402,6 +404,8 @@ export class WordCaptureStrategy implements CaptureStrategy {
     }
 
     this.log('Attaching event listeners to editor');
+    console.log('[Word Capture] Editor element:', this.editorElement);
+    console.log('[Word Capture] Editor has content:', !!this.editorElement.textContent);
 
     const keydownHandler = (e: Event) => this.handleKeyEvent(e as KeyboardEvent);
     const keyupHandler = (e: Event) => this.handleKeyEvent(e as KeyboardEvent);
@@ -606,6 +610,11 @@ export class WordCaptureStrategy implements CaptureStrategy {
     
     if (!this.isWithinEditor(target)) return;
     
+    // Update typing display on keyup to capture all changes including backspace
+    if (event.type === 'keyup') {
+      this.updateTypingDisplay();
+    }
+    
     this.logEvent({
       type: event.type as 'keydown' | 'keyup' | 'keypress',
       timestamp: Date.now(),
@@ -621,6 +630,11 @@ export class WordCaptureStrategy implements CaptureStrategy {
     
     if (!this.isWithinEditor(target)) return;
     
+    // Update real-time typing display in UI panel
+    if (event.type === 'input') {
+      this.updateTypingDisplay();
+    }
+    
     // removed temporarily for log simplification
     // this.logEvent({
     //   type: event.type as 'input' | 'beforeinput',
@@ -630,6 +644,41 @@ export class WordCaptureStrategy implements CaptureStrategy {
     //   targetTag: target.tagName,
     //   selection: this.getSelectionRangeSync()
     // });
+  }
+
+  private updateTypingDisplay(): void {
+    try {
+      const panel = (window as any).wordCapturePanel;
+      if (panel && typeof panel.updateTypedText === 'function' && this.editorElement) {
+        // Try multiple extraction methods
+        let text = '';
+        
+        // Method 1: innerText (best for preserving formatting)
+        if (this.editorElement.innerText) {
+          text = this.editorElement.innerText;
+        }
+        // Method 2: textContent fallback
+        else if (this.editorElement.textContent) {
+          text = this.editorElement.textContent;
+        }
+        // Method 3: innerHTML as last resort, strip tags
+        else if (this.editorElement.innerHTML) {
+          text = this.editorElement.innerHTML.replace(/<[^>]*>/g, ' ').trim();
+        }
+        
+        console.log('[Word Capture] Extracted text length:', text.length, 'Preview:', text.substring(0, 50));
+        panel.updateTypedText(text);
+        this.previousEditorText = text;
+      } else {
+        console.warn('[Word Capture] Panel or editor not available', {
+          hasPanel: !!panel,
+          hasUpdateMethod: !!(panel && panel.updateTypedText),
+          hasEditor: !!this.editorElement
+        });
+      }
+    } catch (e) {
+      console.error('[Word Capture] Error in updateTypingDisplay:', e);
+    }
   }
 
   private handleClipboardEvent(event: ClipboardEvent): void {
@@ -659,17 +708,19 @@ export class WordCaptureStrategy implements CaptureStrategy {
       try {
         const KEY = '__lastClipboard__';
         const chromeApi: any = (globalThis as any).chrome || (window as any).chrome || null;
+        const pastedText = clipboardData ? (clipboardData.getData('text/plain') || '') : '';
 
         const handleSrc = (src: any) => {
           try {
             if (!src) return;
+            
+            // Check if paste is from external source (not from Word document itself)
+            const isExternalSource = src.url && !src.url.includes(location.hostname);
+            
             const age = src.ts ? `${Math.max(0, Date.now() - src.ts)}ms` : 'unknown';
             const title = src.title || '';
             const url = src.url || '';
-            const copiedText = src.text ? src.text.substring(0, 200) : '';
-            
-            // Get the pasted text from clipboard
-            const pastedText = clipboardData ? (clipboardData.getData('text/plain') || '').substring(0, 200) : '';
+            const copiedText = src.text || '';
             
             console.log(
               `%c[Clipboard Source Info]%c\n` +
@@ -683,6 +734,30 @@ export class WordCaptureStrategy implements CaptureStrategy {
               'text-decoration: underline; font-weight: bold;',
               'text-decoration: none; font-weight: normal;'
             );
+            
+            // Only process external source with custom highlighted insertion
+            if (isExternalSource) {
+              try {
+                // Prevent default paste so Word doesn't insert unwrapped content
+                event.preventDefault();
+              } catch (e) {}
+              // Insert highlighted span at current selection
+              this.insertHighlightedPaste(pastedText, url);
+              // Add to floating panel
+              const panel = (window as any).wordCapturePanel;
+              if (panel && typeof panel.addClipboardSource === 'function') {
+                panel.addClipboardSource({
+                  url,
+                  title,
+                  copied: copiedText,
+                  pasted: pastedText,
+                  age,
+                  timestamp: Date.now()
+                });
+              }
+              // Refresh typing display after insertion
+              this.updateTypingDisplay();
+            }
           } catch (e) {}
         };
 
@@ -713,6 +788,46 @@ export class WordCaptureStrategy implements CaptureStrategy {
           } catch (e) {}
         }
       } catch (e) {}
+    }
+  }
+
+  // Direct insertion of highlighted pasted text at current selection
+  private insertHighlightedPaste(pastedText: string, sourceUrl: string): void {
+    try {
+      if (!this.editorDocument || !this.editorElement || !pastedText) return;
+      const doc = this.editorDocument;
+      const selection = doc.getSelection();
+      if (!selection || selection.rangeCount === 0) return;
+      const range = selection.getRangeAt(0);
+      // Delete current selection contents (default paste target)
+      try { range.deleteContents(); } catch (e) {}
+      const span = doc.createElement('span');
+      span.style.backgroundColor = '#fef3c7';
+      span.style.borderBottom = '2px solid #fbbf24';
+      span.style.cursor = 'pointer';
+      span.style.padding = '0 2px';
+      span.title = sourceUrl ? `Open source: ${sourceUrl}` : 'Pasted text';
+      if (sourceUrl) span.dataset.sourceUrl = sourceUrl;
+      // Preserve line breaks by inserting <br> elements
+      const lines = pastedText.split(/\r?\n/);
+      lines.forEach((line, idx) => {
+        span.appendChild(doc.createTextNode(line));
+        if (idx < lines.length - 1) span.appendChild(doc.createElement('br'));
+      });
+      span.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        if (sourceUrl) window.open(sourceUrl, '_blank');
+      });
+      range.insertNode(span);
+      // Move caret after inserted span
+      range.setStartAfter(span);
+      range.setEndAfter(span);
+      selection.removeAllRanges();
+      selection.addRange(range);
+      this.log('Inserted highlighted pasted text span');
+    } catch (e) {
+      this.log('Failed to insert highlighted paste: ' + e);
     }
   }
 
