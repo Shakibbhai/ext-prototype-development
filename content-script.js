@@ -1,6 +1,6 @@
 // ============================================
 // Word Capture Extension - Bundled Content Script
-// Generated: 2025-11-21T13:45:53.363Z
+// Generated: 2025-11-24T13:09:49.654Z
 // ============================================
 
 (function() {
@@ -505,15 +505,40 @@ class WordCaptureStrategy {
                 console.log("object " + `Found PageContent candidate: ${pageContent.className}`);
             }
         }
-        if (!pageContent) {
-            this.log('Could not find PageContent div, using editor element');
-            console.log("object " + 'Could not find PageContent div, using editor element');
-            pageContent = this.editorElement;
+        // Climb DOM to find largest container (NOT editorElement itself)
+        if (!pageContent && this.editorElement.parentElement) {
+            let current = this.editorElement;
+            let maxArea = 0;
+            let bestCandidate = null;
+            while (current && current !== searchDoc.body) {
+                current = current.parentElement;
+                if (!current)
+                    break;
+                const rect = current.getBoundingClientRect();
+                const area = rect.width * rect.height;
+                if (current !== this.editorElement && rect.width > 500 && rect.height > 400 && area > maxArea) {
+                    maxArea = area;
+                    bestCandidate = current;
+                }
+            }
+            if (bestCandidate) {
+                pageContent = bestCandidate;
+                this.log(`Found parent container: ${bestCandidate.className}`);
+            }
         }
-        else {
-            this.log(`Highlighting PageContent: class="${pageContent.className}" id="${pageContent.id}"`);
-            console.log("object " + `Highlighting PageContent: class="${pageContent.className}" id="${pageContent.id}"`);
+        // CRITICAL: Never apply to editorElement - skip entirely if no proper container found
+        if (!pageContent || pageContent === this.editorElement) {
+            this.log('Could not find proper page container (would be editorElement), skipping border');
+            console.log("object " + 'Could not find proper page container, skipping border');
+            return;
         }
+        // Verify it contains the editor
+        if (!pageContent.contains(this.editorElement)) {
+            this.log('PageContent does not contain editor, skipping border');
+            return;
+        }
+        this.log(`Highlighting PageContent: class="${pageContent.className}" id="${pageContent.id}"`);
+        console.log("object " + `Highlighting PageContent: class="${pageContent.className}" id="${pageContent.id}"`);
         pageContent.style.border = '3px solid #00a67e';
         pageContent.style.boxShadow = '0 0 10px rgba(0, 166, 126, 0.3)';
         pageContent.style.outline = 'none';
