@@ -1,38 +1,47 @@
 {
   "manifest_version": 3,
-  "name": "Word Online Capture Strategy Prototype",
+  "name": "Word Capture Extension - BETA",
   "version": "1.0.0",
-  "description": "Prototype extension for capturing user input events in Microsoft Word 365 Online",
+  "description": "Capture text changes from MS Word Online, Google Docs, and other web editors",
+  "minimum_chrome_version": "116",
   "permissions": [
     "activeTab",
-    "storage"
+    "storage",
+    "tabs",
+    "scripting",
+    "webNavigation"
   ],
   "host_permissions": [
-    "*://*.office.com/*",
-    "*://*.officeapps.live.com/*",
-    "*://*.sharepoint.com/*",
-    "*://*.live.com/*",
-    "*://*.microsoft.com/*"
+    "<all_urls>"
   ],
   "content_scripts": [
     {
       "matches": [
-        "*://*.office.com/*",
-        "*://*.officeapps.live.com/*",
-        "*://*.sharepoint.com/*",
-        "*://*.live.com/*",
-        "*://*.microsoft.com/*"
+        "<all_urls>"
       ],
       "js": ["content-script.js"],
       "run_at": "document_idle",
       "all_frames": true
-    }
-    ,
+    },
     {
       "matches": ["<all_urls>"],
       "js": ["clipboard-writer.js"],
       "run_at": "document_idle",
       "all_frames": true
     }
-  ]
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "content-script.js",
+        "clipboard-writer.js"
+      ],
+      "matches": [
+        "<all_urls>"
+      ]
+    }
+  ],
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; upgrade-insecure-requests;"
+  }
 }

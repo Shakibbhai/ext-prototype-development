@@ -508,23 +508,28 @@ export class WordCaptureStrategy implements CaptureStrategy {
     if (!this.editorElement) return;
 
     const searchDoc = this.editorDocument || this.editorElement.ownerDocument || document;
-    console.log("object ", searchDoc);
     let pageContent: HTMLElement | null = null;
     
-    this.log(`Searching for PageContent in ${searchDoc === document ? 'main document' : 'iframe document'}`);
-    console.log("object "+`Searching for PageContent in ${searchDoc === document ? 'main document' : 'iframe document'}`)
+    this.log(`Searching for page container in ${searchDoc === document ? 'main document' : 'iframe document'}`);
     
-    pageContent = this.editorElement.closest('.PageContent') as HTMLElement;
+    // 1) Try PagesContainer first (main MS Word container)
+ pageContent = this.editorElement.closest('.PageContent') as HTMLElement;
     if (pageContent) {
-      this.log('Found PageContent via closest()');
-      console.log("object "+'Found PageContent via closest()')
+      this.log('Found PagesContainer via querySelector');
     }
     
     if (!pageContent) {
+      pageContent = searchDoc.getElementById('PagesContainer');
+      if (pageContent) {
+        this.log('Found PagesContainer via getElementById');
+      }
+    }
+    
+    // 2) Try PageContent as fallback
+    if (!pageContent) {
       pageContent = searchDoc.querySelector('.PageContent') as HTMLElement;
       if (pageContent) {
-        this.log('Found PageContent via querySelector in iframe');
-        console.log("object "+'Found PageContent via closest()')
+        this.log('Found PageContent via querySelector');
       }
     }
     
@@ -532,60 +537,57 @@ export class WordCaptureStrategy implements CaptureStrategy {
       pageContent = searchDoc.getElementById('PageContent');
       if (pageContent) {
         this.log('Found PageContent via getElementById');
-        console.log("object "+'Found PageContent via getElementById')
       }
     }
     
+    // 3) Try partial matches
     if (!pageContent) {
-      const candidates = searchDoc.querySelectorAll('[class*="PageContent"], [id*="PageContent"]');
+      const candidates = searchDoc.querySelectorAll('[class*="PagesContainer"], [class*="PageContent"], [id*="PagesContainer"], [id*="PageContent"]');
       if (candidates.length > 0) {
         pageContent = candidates[0] as HTMLElement;
-        this.log(`Found PageContent candidate: ${pageContent.className}`);
-        console.log("object "+`Found PageContent candidate: ${pageContent.className}`);
+        this.log(`Found container candidate: ${pageContent.className}`);
       }
     }
     
-    // Climb DOM to find largest container (NOT editorElement itself)
+    // // 4) Look for WACViewPanel
+    // if (!pageContent) {
+    //   const wacPanel = searchDoc.querySelector('[id*="WACViewPanel"]') as HTMLElement | null;
+    //   if (wacPanel) {
+    //     pageContent = wacPanel;
+    //     this.log('Found WACViewPanel');
+    //   }
+    // }
+    
+    // 5) Climb ancestors to find page container (skip editorElement and its direct parent)
     if (!pageContent && this.editorElement.parentElement) {
-      let current: HTMLElement | null = this.editorElement;
-      let maxArea = 0;
+      let current: HTMLElement | null = this.editorElement.parentElement.parentElement; // Skip direct parent
       let bestCandidate: HTMLElement | null = null;
-      
+
       while (current && current !== searchDoc.body) {
-        current = current.parentElement;
-        if (!current) break;
-        
         const rect = current.getBoundingClientRect();
-        const area = rect.width * rect.height;
-        
-        if (current !== this.editorElement && rect.width > 500 && rect.height > 400 && area > maxArea) {
-          maxArea = area;
+        // Ensure it's NOT the editor itself and is page-sized
+        if (current !== this.editorElement && rect.width > 600 && rect.height > 400) {
           bestCandidate = current;
+          break;
         }
+        current = current.parentElement;
       }
-      
+
       if (bestCandidate) {
         pageContent = bestCandidate;
         this.log(`Found parent container: ${bestCandidate.className}`);
       }
     }
     
-    // CRITICAL: Never apply to editorElement - skip entirely if no proper container found
-    if (!pageContent || pageContent === this.editorElement) {
-      this.log('Could not find proper page container (would be editorElement), skipping border');
-      console.log("object "+'Could not find proper page container, skipping border')
+    // CRITICAL: Never apply border to editorElement itself - skip if that's all we found
+    if (!pageContent || pageContent === this.editorElement || pageContent.contains(this.editorElement) === false) {
+      this.log('Could not find proper outer container (would be editorElement), skipping border');
       return;
     }
     
-    // Verify it contains the editor
-    if (!pageContent.contains(this.editorElement)) {
-      this.log('PageContent does not contain editor, skipping border');
-      return;
-    }
-    
-    this.log(`Highlighting PageContent: class="${pageContent.className}" id="${pageContent.id}"`);
-    console.log("object "+`Highlighting PageContent: class="${pageContent.className}" id="${pageContent.id}"`)
+    this.log(`Highlighting page container: class="${pageContent.className}" id="${pageContent.id}"`);
 
+    // Apply border ONLY to the page container
     pageContent.style.border = '3px solid #00a67e';
     pageContent.style.boxShadow = '0 0 10px rgba(0, 166, 126, 0.3)';
     pageContent.style.outline = 'none';
@@ -613,7 +615,6 @@ export class WordCaptureStrategy implements CaptureStrategy {
     });
 
     this.log('Visual indicator added');
-    console.log("object "+'Visual indicator added')
   }
 
   private isWithinEditor(target: HTMLElement): boolean {

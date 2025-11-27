@@ -40,4 +40,14 @@ export class SimpleCaptureManager {
   getActiveStrategy(): CaptureStrategy | undefined {
     return this.activeStrategy;
   }
+
+  processCaptureEvent(event: any): void {
+    console.log('🎯 [Capture Manager] Processing capture event:', {
+      type: event.type,
+      pos: event.pos,
+      length: event.length,
+      text: event.text?.substring(0, 50) + (event.text && event.text.length > 50 ? '...' : ''),
+      timestamp: new Date(event.timestamp).toISOString()
+    });
+  }
 }

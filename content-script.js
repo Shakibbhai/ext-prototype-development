@@ -1,10 +1,39 @@
 // ============================================
 // Word Capture Extension - Bundled Content Script
-// Generated: 2025-11-24T13:09:49.654Z
+// Generated: 2025-11-27T06:42:29.924Z
 // ============================================
 
 (function() {
     'use strict';
+
+// ============================================
+// logger.js
+// ============================================
+// This is a placeholder for the logger functionality.
+// In a real scenario, this would proxy to the background script.
+var LogLevel;
+(function (LogLevel) {
+    LogLevel[LogLevel["DEBUG"] = 0] = "DEBUG";
+    LogLevel[LogLevel["INFO"] = 1] = "INFO";
+    LogLevel[LogLevel["WARN"] = 2] = "WARN";
+    LogLevel[LogLevel["ERROR"] = 3] = "ERROR";
+})(LogLevel || (LogLevel = {}));
+const createLoggerInternal = (namespace) => {
+    const log = (level, ...args) => {
+        const levelStr = LogLevel[level];
+        console.log(`[${levelStr}] ${namespace}:`, ...args);
+    };
+    return {
+        debug: (...args) => log(LogLevel.DEBUG, ...args),
+        info: (...args) => log(LogLevel.INFO, ...args),
+        warn: (...args) => log(LogLevel.WARN, ...args),
+        error: (...args) => log(LogLevel.ERROR, ...args),
+    };
+};
+function createLogger(namespace) {
+    return createLoggerInternal(namespace);
+}
+
 
 // ============================================
 // types.js
@@ -44,6 +73,15 @@ class SimpleCaptureManager {
     }
     getActiveStrategy() {
         return this.activeStrategy;
+    }
+    processCaptureEvent(event) {
+        console.log('🎯 [Capture Manager] Processing capture event:', {
+            type: event.type,
+            pos: event.pos,
+            length: event.length,
+            text: event.text?.substring(0, 50) + (event.text && event.text.length > 50 ? '...' : ''),
+            timestamp: new Date(event.timestamp).toISOString()
+        });
     }
 }
 
@@ -474,71 +512,73 @@ class WordCaptureStrategy {
         if (!this.editorElement)
             return;
         const searchDoc = this.editorDocument || this.editorElement.ownerDocument || document;
-        console.log("object ", searchDoc);
         let pageContent = null;
-        this.log(`Searching for PageContent in ${searchDoc === document ? 'main document' : 'iframe document'}`);
-        console.log("object " + `Searching for PageContent in ${searchDoc === document ? 'main document' : 'iframe document'}`);
+        this.log(`Searching for page container in ${searchDoc === document ? 'main document' : 'iframe document'}`);
+        // 1) Try PagesContainer first (main MS Word container)
         pageContent = this.editorElement.closest('.PageContent');
         if (pageContent) {
-            this.log('Found PageContent via closest()');
-            console.log("object " + 'Found PageContent via closest()');
+            this.log('Found PagesContainer via querySelector');
         }
+        if (!pageContent) {
+            pageContent = searchDoc.getElementById('PagesContainer');
+            if (pageContent) {
+                this.log('Found PagesContainer via getElementById');
+            }
+        }
+        // 2) Try PageContent as fallback
         if (!pageContent) {
             pageContent = searchDoc.querySelector('.PageContent');
             if (pageContent) {
-                this.log('Found PageContent via querySelector in iframe');
-                console.log("object " + 'Found PageContent via closest()');
+                this.log('Found PageContent via querySelector');
             }
         }
         if (!pageContent) {
             pageContent = searchDoc.getElementById('PageContent');
             if (pageContent) {
                 this.log('Found PageContent via getElementById');
-                console.log("object " + 'Found PageContent via getElementById');
             }
         }
+        // 3) Try partial matches
         if (!pageContent) {
-            const candidates = searchDoc.querySelectorAll('[class*="PageContent"], [id*="PageContent"]');
+            const candidates = searchDoc.querySelectorAll('[class*="PagesContainer"], [class*="PageContent"], [id*="PagesContainer"], [id*="PageContent"]');
             if (candidates.length > 0) {
                 pageContent = candidates[0];
-                this.log(`Found PageContent candidate: ${pageContent.className}`);
-                console.log("object " + `Found PageContent candidate: ${pageContent.className}`);
+                this.log(`Found container candidate: ${pageContent.className}`);
             }
         }
-        // Climb DOM to find largest container (NOT editorElement itself)
+        // // 4) Look for WACViewPanel
+        // if (!pageContent) {
+        //   const wacPanel = searchDoc.querySelector('[id*="WACViewPanel"]') as HTMLElement | null;
+        //   if (wacPanel) {
+        //     pageContent = wacPanel;
+        //     this.log('Found WACViewPanel');
+        //   }
+        // }
+        // 5) Climb ancestors to find page container (skip editorElement and its direct parent)
         if (!pageContent && this.editorElement.parentElement) {
-            let current = this.editorElement;
-            let maxArea = 0;
+            let current = this.editorElement.parentElement.parentElement; // Skip direct parent
             let bestCandidate = null;
             while (current && current !== searchDoc.body) {
-                current = current.parentElement;
-                if (!current)
-                    break;
                 const rect = current.getBoundingClientRect();
-                const area = rect.width * rect.height;
-                if (current !== this.editorElement && rect.width > 500 && rect.height > 400 && area > maxArea) {
-                    maxArea = area;
+                // Ensure it's NOT the editor itself and is page-sized
+                if (current !== this.editorElement && rect.width > 600 && rect.height > 400) {
                     bestCandidate = current;
+                    break;
                 }
+                current = current.parentElement;
             }
             if (bestCandidate) {
                 pageContent = bestCandidate;
                 this.log(`Found parent container: ${bestCandidate.className}`);
             }
         }
-        // CRITICAL: Never apply to editorElement - skip entirely if no proper container found
-        if (!pageContent || pageContent === this.editorElement) {
-            this.log('Could not find proper page container (would be editorElement), skipping border');
-            console.log("object " + 'Could not find proper page container, skipping border');
+        // CRITICAL: Never apply border to editorElement itself - skip if that's all we found
+        if (!pageContent || pageContent === this.editorElement || pageContent.contains(this.editorElement) === false) {
+            this.log('Could not find proper outer container (would be editorElement), skipping border');
             return;
         }
-        // Verify it contains the editor
-        if (!pageContent.contains(this.editorElement)) {
-            this.log('PageContent does not contain editor, skipping border');
-            return;
-        }
-        this.log(`Highlighting PageContent: class="${pageContent.className}" id="${pageContent.id}"`);
-        console.log("object " + `Highlighting PageContent: class="${pageContent.className}" id="${pageContent.id}"`);
+        this.log(`Highlighting page container: class="${pageContent.className}" id="${pageContent.id}"`);
+        // Apply border ONLY to the page container
         pageContent.style.border = '3px solid #00a67e';
         pageContent.style.boxShadow = '0 0 10px rgba(0, 166, 126, 0.3)';
         pageContent.style.outline = 'none';
@@ -562,7 +602,6 @@ class WordCaptureStrategy {
             }
         });
         this.log('Visual indicator added');
-        console.log("object " + 'Visual indicator added');
     }
     isWithinEditor(target) {
         if (!target)
@@ -914,6 +953,848 @@ class WordCaptureStrategy {
         return this.observerActive;
     }
 }
+
+
+// ============================================
+// GoogleDocsCapture.js
+// ============================================
+
+
+const logger = createLogger("content.injections.googledDocs");
+const kGoogleCaptureTag = Symbol("GoogleCaptureTag");
+const kGoogleCaptureIdTag = Symbol("GoogleCaptureIdTag");
+class GoogleDocsCapture {
+    static is(element) {
+        return !!(element && element[kGoogleCaptureTag]);
+    }
+    static get(element) {
+        return this.instances.get(element[kGoogleCaptureIdTag]);
+    }
+    static get instance() {
+        if (!GoogleDocsCapture._instance) {
+            GoogleDocsCapture._instance = new GoogleDocsCapture();
+        }
+        return GoogleDocsCapture._instance;
+    }
+    constructor() {
+        this.tileObservers = new WeakMap();
+        this.observersForCleanup = new Set();
+        this.pageObservers = new Map();
+        // new diff strategy to track inputs event agnostic
+        this.previousText = "";
+        this.isProcessingChange = false;
+        this.changeTimeout = null;
+    }
+    matches(hostname) {
+        return hostname.includes("docs.google.com");
+    }
+    applyCanvas(cb) {
+        const tiles = document
+            .querySelector(".kix-appview-editor")
+            ?.querySelectorAll(".kix-canvas-tile-content");
+        const results = [];
+        tiles?.forEach((tile) => {
+            results.push(cb(tile));
+            let entry = this.tileObservers.get(tile);
+            if (!entry) {
+                const callbacks = new Set([cb]);
+                const observer = new MutationObserver(() => {
+                    callbacks.forEach((fn) => fn(tile));
+                });
+                observer.observe(tile, { childList: true, subtree: true });
+                this.tileObservers.set(tile, { observer, callbacks });
+            }
+            else {
+                entry.callbacks.add(cb);
+            }
+        });
+        return results;
+    }
+    highlight(style) {
+        const border = style.border;
+        if (!border)
+            return () => { };
+        const prevBorders = new WeakMap();
+        this.applyCanvas((tile) => {
+            prevBorders.set(tile, tile.style.border);
+            tile.style.border = border;
+        });
+        return () => this.applyCanvas((tile) => (tile.style.border = prevBorders.get(tile)));
+    }
+    async queryNodes(root = document) {
+        console.log("Capturing from google docs");
+        const iframes = root.querySelectorAll(".docs-texteventtarget-iframe");
+        iframes.forEach((iframe) => {
+            if (!iframe[kGoogleCaptureTag]) {
+                iframe[kGoogleCaptureTag] = true;
+                iframe[kGoogleCaptureIdTag] = Math.floor(1 + Math.random() * (2147483647 - 1));
+                GoogleDocsCapture.instances.set(iframe[kGoogleCaptureIdTag], this);
+            }
+        });
+        return Array.from(iframes);
+    }
+    canTrackSelection(doc) {
+        return doc.baseURI.includes("docs.google.com/document");
+    }
+    /**
+     * Reconstructs the full text of the document by reading the `aria-label`
+     * attributes from the SVG text rectangles and ordering them visually.
+     */
+    extractText() {
+        console.log("📖 [GoogleDocs] extractText() called");
+        const rects = this.getAllTextRects();
+        console.log("📐 [GoogleDocs] Text rects found:", rects.length);
+        const text = rects.map((rectData) => rectData.text).join("\n");
+        console.log("📄 [GoogleDocs] Extracted text length:", text.length);
+        return text;
+    }
+    /**
+     * Gathers all SVG rects representing text and sorts them in reading order.
+     */
+    getAllTextRects() {
+        const allTextRects = [];
+        const contentTiles = document.querySelectorAll("div.kix-canvas-tile-content:not(.kix-canvas-tile-selection)");
+        contentTiles.forEach((tile, tileIndex) => {
+            const rects = tile.querySelectorAll("rect[aria-label]");
+            rects.forEach((r) => {
+                const transform = r.getAttribute("transform") || "";
+                const match = /matrix\([^,]+,[^,]+,[^,]+,[^,]+,([^,]+),([^,]+)\)/.exec(transform);
+                if (match) {
+                    allTextRects.push({
+                        text: r.getAttribute("aria-label") ?? "",
+                        x: parseFloat(match[1]),
+                        y: parseFloat(match[2]),
+                        page: tileIndex,
+                    });
+                }
+            });
+        });
+        // Sort rects by visual position (top-to-bottom, then left-to-right)
+        const Y_TOLERANCE = 5; // Tolerance for slight misalignments in the same line
+        allTextRects.sort((a, b) => {
+            if (a.page !== b.page) {
+                return a.page - b.page;
+            }
+            if (Math.abs(a.y - b.y) > Y_TOLERANCE) {
+                return a.y - b.y;
+            }
+            return a.x - b.x;
+        });
+        return allTextRects.map(({ text, x, y }) => ({ text, x, y }));
+    }
+    /**
+     * This is the core of the new strategy. It's triggered when the DOM changes,
+     * gets the new text, and compares it to the previous version to find the change.
+     */
+    async processChanges() {
+        //console.log("🔍 [GoogleDocs] processChanges() called");
+        if (this.isProcessingChange) {
+            //console.log("⏸️ [GoogleDocs] Already processing, skipping...");
+            return;
+        }
+        this.isProcessingChange = true;
+        const newText = this.extractText();
+        console.log("📝 [GoogleDocs] Extracted text:", {
+            length: newText.length,
+            preview: newText.substring(0, 100) + (newText.length > 100 ? "..." : ""),
+        });
+        if (newText !== this.previousText) {
+            //console.log("✨ [GoogleDocs] Change detected! Calculating diff...");
+            console.log("📊 [GoogleDocs] Text comparison:", {
+                oldLength: this.previousText.length,
+                newLength: newText.length,
+                oldPreview: this.previousText.substring(0, 50) + "...",
+                newPreview: newText.substring(0, 50) + "...",
+            });
+            //logger.debug("Change detected, calculating diff.");
+            const captureEvents = this.calculateDiff(this.previousText, newText);
+            // console.log("🎯 [GoogleDocs] Diff calculated, events generated:", captureEvents);
+            const captureManager = CaptureManager.instance;
+            for (const event of captureEvents) {
+                console.log("📤 [GoogleDocs] Processing capture event:", event);
+                captureManager.processCaptureEvent(event);
+            }
+            this.previousText = newText;
+            //console.log("✅ [GoogleDocs] Text state updated");
+        }
+        else {
+            //console.log("⏭️ [GoogleDocs] No changes detected");
+        }
+        this.isProcessingChange = false;
+        //console.log("🏁 [GoogleDocs] processChanges() completed");
+    }
+    /**
+     * Compares two strings to find the first and last differing characters,
+     * then generates `delete` and `insertion` events for that range.
+     */
+    calculateDiff(oldStr, newStr) {
+        //console.log("🔬 [GoogleDocs] calculateDiff() started");
+        const events = [];
+        const timestamp = Date.now();
+        logger.debug({ oldStr, newStr }, "Calculating diff");
+        let start = 0;
+        while (start < oldStr.length && start < newStr.length && oldStr[start] === newStr[start]) {
+            start++;
+        }
+        let oldEnd = oldStr.length;
+        let newEnd = newStr.length;
+        while (oldEnd > start && newEnd > start && oldStr[oldEnd - 1] === newStr[newEnd - 1]) {
+            oldEnd--;
+            newEnd--;
+        }
+        console.log("📍 [GoogleDocs] Diff range found:", {
+            start,
+            oldEnd,
+            newEnd,
+            deletedLength: oldEnd - start,
+            insertedLength: newEnd - start,
+        });
+        logger.debug("Found newStr differs in range %d to %d", start, newEnd);
+        const deletedLength = oldEnd - start;
+        if (deletedLength > 0) {
+            const deleteEvent = {
+                type: "delete",
+                timestamp,
+                pos: start,
+                length: deletedLength,
+            };
+            console.log("🗑️ [GoogleDocs] Delete event created:", deleteEvent);
+            events.push(deleteEvent);
+        }
+        const insertedText = newStr.substring(start, newEnd);
+        if (insertedText.length > 0) {
+            const insertEvent = {
+                type: "insertion",
+                timestamp: timestamp + 1,
+                pos: start + insertedText.length,
+                length: insertedText.length,
+                text: insertedText,
+            };
+            console.log("➕ [GoogleDocs] Insertion event created:", insertEvent, "Text:", insertedText);
+            events.push(insertEvent);
+        }
+        console.log("✅ [GoogleDocs] calculateDiff() completed, total events:", events.length);
+        return events;
+    }
+    /**
+     * Sets up a multi-level observer system to efficiently monitor the document
+     * for any changes to the rendered text content.
+     */
+    setupSelectionTracking(tracker, doc) {
+        //console.log("🚀 [GoogleDocs] setupSelectionTracking() initialized");
+        const onChangeDetected = () => {
+            // console.log("🔔 [GoogleDocs] Change detected in DOM, scheduling processChanges...");
+            if (this.changeTimeout)
+                clearTimeout(this.changeTimeout);
+            // Debounce changes to avoid excessive processing during rapid typing
+            this.changeTimeout = setTimeout(() => this.processChanges(), 150);
+        };
+        const setupContentObserver = (page) => {
+            if (this.pageObservers.has(page))
+                return; // Already observing
+            const contentTile = page.querySelector("div.kix-canvas-tile-content:not(.kix-canvas-tile-selection)");
+            if (contentTile) {
+                console.log("👁️ [GoogleDocs] Attaching content observer to a new page");
+                logger.debug("Attaching content observer to a new page.");
+                const observer = new MutationObserver(onChangeDetected);
+                observer.observe(contentTile, {
+                    childList: true,
+                    subtree: true,
+                    attributes: true,
+                    attributeFilter: ["aria-label"],
+                });
+                this.pageObservers.set(page, observer);
+                this.observersForCleanup.add(observer);
+                console.log("✅ [GoogleDocs] Observer attached successfully");
+            }
+        };
+        const pageObserver = new MutationObserver((mutations) => {
+            for (const mutation of mutations) {
+                mutation.addedNodes.forEach((node) => {
+                    if (node.nodeType === Node.ELEMENT_NODE &&
+                        node.classList.contains("kix-page-paginated")) {
+                        setupContentObserver(node);
+                    }
+                });
+                mutation.removedNodes.forEach((node) => {
+                    if (node.nodeType === Node.ELEMENT_NODE && this.pageObservers.has(node)) {
+                        const observer = this.pageObservers.get(node);
+                        if (observer) {
+                            observer.disconnect();
+                            this.observersForCleanup.delete(observer);
+                            this.pageObservers.delete(node);
+                            logger.debug("Cleaned up observer for removed page.");
+                        }
+                    }
+                });
+            }
+        });
+        const attachPageObserver = (editorRoot) => {
+            // console.log("🎯 [GoogleDocs] Editor root found. Attaching page observer");
+            logger.debug("Editor root found. Attaching page observer.");
+            // Initial scan for existing pages
+            const existingPages = editorRoot.querySelectorAll(".kix-page-paginated");
+            //console.log("📄 [GoogleDocs] Existing pages found:", existingPages.length);
+            existingPages.forEach(setupContentObserver);
+            // Watch for new pages being added
+            pageObserver.observe(editorRoot, { childList: true });
+            this.observersForCleanup.add(pageObserver);
+            // Capture initial state
+            this.previousText = this.extractText();
+            console.log("💾 [GoogleDocs] Initial text state captured:", {
+                length: this.previousText.length,
+                preview: this.previousText.substring(0, 100) + "...",
+            });
+        };
+        // Bootstrap Observer: Waits for the main editor to appear in the DOM.
+        const editorContent = doc.querySelector(".kix-rotatingtilemanager-content");
+        if (editorContent) {
+            attachPageObserver(editorContent);
+        }
+        else {
+            const bootstrapObserver = new MutationObserver(() => {
+                const editorContent = doc.querySelector(".kix-rotatingtilemanager-content");
+                if (editorContent) {
+                    bootstrapObserver.disconnect();
+                    this.observersForCleanup.delete(bootstrapObserver);
+                    attachPageObserver(editorContent);
+                }
+            });
+            bootstrapObserver.observe(doc.body, { childList: true, subtree: true });
+            this.observersForCleanup.add(bootstrapObserver);
+        }
+        // Return a cleanup function
+        return () => {
+            if (this.changeTimeout)
+                clearTimeout(this.changeTimeout);
+            for (const observer of this.observersForCleanup) {
+                observer.disconnect();
+            }
+            this.observersForCleanup.clear();
+            this.pageObservers.clear();
+            logger.debug("All Google Docs observers have been disconnected.");
+        };
+    }
+    initialize() {
+        this.setupSelectionTracking(null, document);
+    }
+    cleanup() {
+        if (this.changeTimeout)
+            clearTimeout(this.changeTimeout);
+        for (const observer of this.observersForCleanup) {
+            observer.disconnect();
+        }
+        this.observersForCleanup.clear();
+        this.pageObservers.clear();
+        logger.debug("All Google Docs observers have been disconnected.");
+    }
+    // DO NOT CALL - whole architecture is screwed but fix that later
+    async getSelectionRange(doc) {
+        return null;
+    }
+    async resolveInsertion(event, doc) {
+        return null;
+    }
+}
+GoogleDocsCapture.instances = new Map();
+// ---------------------------------------------------------
+// Clipboard provenance logger for Google Docs
+// - Logs a concise line on paste with pasted text, original source URL,
+//   original copied text (truncated), and age since copy
+// ---------------------------------------------------------
+(function attachGoogleDocsPasteLogger() {
+    try {
+        // Hostname guard: prevent running on non-Google Docs pages (Word was showing GoogleDocs logs)
+        if (!/(^|\.)docs\.google\.com$/i.test(location.hostname))
+            return;
+        const w = window;
+        if (w.__gd_paste_logger_attached)
+            return;
+        w.__gd_paste_logger_attached = true;
+        const chromeAny = globalThis.chrome;
+        const key = "__lastClipboard__";
+        const getLastClipboard = async () => {
+            try {
+                if (chromeAny?.storage?.local) {
+                    return await new Promise((resolve) => chromeAny.storage.local.get([key], (items) => resolve(items?.[key] ?? null)));
+                }
+                const raw = localStorage.getItem(key);
+                return raw ? JSON.parse(raw) : null;
+            }
+            catch {
+                return null;
+            }
+        };
+        const truncate = (s, n = 200) => (s && s.length > n ? s.slice(0, n) + "…" : s || "");
+        // Helper to show floating paste indicator in Google Docs
+        const showGoogleDocsPasteUI = (pasted, meta) => {
+            if (!meta || !pasted)
+                return;
+            try {
+                // Create floating indicator
+                const indicator = document.createElement('div');
+                indicator.style.cssText = `
+          position: fixed;
+          top: 80px;
+          right: 20px;
+          background: #ffeb3b;
+          color: #000;
+          padding: 8px 16px;
+          border-radius: 4px;
+          box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+          z-index: 9999;
+          cursor: pointer;
+          font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+          font-size: 13px;
+          font-weight: 500;
+          max-width: 200px;
+          text-align: center;
+          transition: all 0.2s ease;
+        `;
+                indicator.textContent = '📋 PASTED TEXT';
+                indicator.title = 'Click to view paste source';
+                // Create tooltip (shows on hover, above indicator)
+                const tooltip = document.createElement('div');
+                tooltip.style.cssText = `
+          display: none;
+          position: fixed;
+          background: #fff;
+          border: 1px solid #ddd;
+          border-radius: 4px;
+          padding: 8px 12px;
+          box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+          z-index: 10000;
+          max-width: 300px;
+          font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+          font-size: 12px;
+          line-height: 1.4;
+          pointer-events: none;
+        `;
+                const age = Date.now() - meta.ts;
+                const ageStr = age < 60000 ? `${Math.floor(age / 1000)}s ago` : `${Math.floor(age / 60000)}m ago`;
+                tooltip.innerHTML = `
+          <div style="font-weight: bold; margin-bottom: 4px; color: #ff6b6b; font-size: 10px;">
+            PASTED FROM EXTERNAL SOURCE
+          </div>
+          ${meta.title ? `<div style="margin-bottom: 3px;"><strong>From:</strong> ${truncate(meta.title, 80)}</div>` : ''}
+          <div style="color: #666; font-size: 11px;">Copied ${ageStr}</div>
+        `;
+                document.body.appendChild(indicator);
+                document.body.appendChild(tooltip);
+                // Show tooltip above on hover
+                indicator.addEventListener('mouseenter', () => {
+                    const rect = indicator.getBoundingClientRect();
+                    tooltip.style.display = 'block';
+                    tooltip.style.left = `${rect.left}px`;
+                    tooltip.style.top = `${rect.top - tooltip.offsetHeight - 8}px`; // 8px gap above
+                });
+                indicator.addEventListener('mouseleave', () => {
+                    tooltip.style.display = 'none';
+                });
+                // Click handler to open extension sidebar
+                indicator.addEventListener('click', () => {
+                    window.postMessage({
+                        type: 'COPILOT_SHOW_PASTE_DETAILS',
+                        data: {
+                            pastedText: pasted,
+                            sourceUrl: meta.url,
+                            sourceTitle: meta.title || 'Unknown',
+                            copiedAt: meta.ts,
+                            originalText: meta.text
+                        }
+                    }, '*');
+                });
+                // Auto-hide indicator after 10 seconds
+                setTimeout(() => {
+                    indicator.style.opacity = '0';
+                    setTimeout(() => {
+                        indicator.remove();
+                        tooltip.remove();
+                    }, 300);
+                }, 10000);
+            }
+            catch (err) {
+                console.error('[GoogleDocs Paste UI] Failed to show indicator:', err);
+            }
+        };
+        const logPaste = async (sourceEvt) => {
+            try {
+                let pasted = sourceEvt?.clipboardData?.getData("text/plain") ?? "";
+                if (!pasted) {
+                    // Fallback: async clipboard API after paste (may be blocked without permissions)
+                    try {
+                        pasted = await navigator.clipboard.readText();
+                    }
+                    catch { }
+                }
+                const meta = await getLastClipboard();
+                const parts = [];
+                parts.push(`[Clipboard] PASTE -> GoogleDocs | pasted="${truncate(pasted)}" length=${pasted.length}`);
+                if (meta) {
+                    parts.push(`| from=${meta.url} | copied="${truncate(meta.text)}" srcAge=${Math.max(0, Date.now() - meta.ts)}ms`);
+                }
+                console.log(parts.join(" "));
+                // Show floating paste UI
+                showGoogleDocsPasteUI(pasted, meta);
+            }
+            catch {
+                // ignore
+            }
+        };
+        // Attach listeners on multiple targets (document, window, editor root)
+        const attachListeners = (target) => {
+            target.addEventListener("paste", (e) => {
+                // microtask to let internal handlers run first
+                Promise.resolve().then(() => logPaste(e));
+            }, { capture: true });
+            target.addEventListener("keydown", (e) => {
+                if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "v") {
+                    setTimeout(() => logPaste(), 30); // fallback
+                }
+            }, { capture: true });
+        };
+        attachListeners(document);
+        attachListeners(window);
+        // Try editor root if present
+        const editorRoot = document.querySelector(".kix-appview-editor, .kix-rotatingtilemanager-content");
+        if (editorRoot)
+            attachListeners(editorRoot);
+        // Attach inside typing iframe (paste may fire there)
+        const connectIframe = (iframe) => {
+            try {
+                if (iframe.__gd_iframe_paste_attached)
+                    return;
+                const cw = iframe.contentWindow;
+                if (!cw)
+                    return;
+                iframe.__gd_iframe_paste_attached = true;
+                attachListeners(cw);
+            }
+            catch { }
+        };
+        document
+            .querySelectorAll(".docs-texteventtarget-iframe")
+            .forEach(connectIframe);
+        // Observe future iframes
+        const mo = new MutationObserver((muts) => {
+            muts.forEach((m) => {
+                m.addedNodes.forEach((n) => {
+                    if (n instanceof HTMLIFrameElement &&
+                        n.classList.contains("docs-texteventtarget-iframe")) {
+                        connectIframe(n);
+                    }
+                });
+            });
+        });
+        mo.observe(document.body, { childList: true, subtree: true });
+    }
+    catch {
+        // ignore
+    }
+})();
+
+
+// ============================================
+// DefaultCaptureStrategy.js
+// ============================================
+// =========================================================
+// FRAMEWORKS
+// =========================================================
+function detectFramework(el) {
+    if (el.classList.contains("ProseMirror"))
+        return "ProseMirror";
+    if (el.classList.contains("ql-editor"))
+        return "Quill";
+    if (el.hasAttribute("data-slate-editor"))
+        return "Slate";
+    if (el.hasAttribute("data-contents"))
+        return "DraftJS";
+    // Custom/fallback signatures
+    if (el.dataset.editorType === "prosemirror")
+        return "ProseMirror";
+    if (el.dataset.editor === "prosemirror")
+        return "ProseMirror";
+    return "unknown-contenteditable";
+}
+function isSingleLine(el) {
+    const style = getComputedStyle(el);
+    // ARIA role
+    const role = el.getAttribute("role");
+    const isMultiline = el.getAttribute("aria-multiline") === "true";
+    // Approx line-height check
+    const lineHeight = parseFloat(style.lineHeight) || 16;
+    const singleLineHeight = lineHeight * 1.5;
+    const isSingleLineHeight = el.clientHeight <= singleLineHeight;
+    // CSS nowrap check
+    const isNoWrap = style.whiteSpace.includes("nowrap");
+    if ((role === "textbox" && !isMultiline) || // role says single-line
+        isNoWrap || // forced single-line
+        isSingleLineHeight // visually one-line
+    ) {
+        return true; // skip single-line editors
+    }
+    return false;
+}
+class DefaultCaptureStrategy {
+    static get instance() {
+        if (!DefaultCaptureStrategy._instance) {
+            DefaultCaptureStrategy._instance = new DefaultCaptureStrategy();
+        }
+        return DefaultCaptureStrategy._instance;
+    }
+    constructor() {
+        this.isDefault = true;
+        this.queryCache = [];
+    }
+    matches(hostname) {
+        // fallback strategy (works everywhere not explicitly handled)
+        return true;
+    }
+    highlight(style, target) {
+        const border = style.border;
+        if (!border)
+            return () => { };
+        const prev = target.style.border;
+        target.style.border = border;
+        return () => (target.style.border = prev);
+    }
+    async queryNodes(root = document) {
+        return Promise.all([
+            Promise.resolve(root.querySelectorAll("textarea")).then((c) => Array.from(c).reduce((acc, el) => {
+                const rows = parseInt(el.getAttribute("rows") || "2", 10);
+                if (rows <= 1)
+                    return acc;
+                this.queryCache.push({
+                    element: el,
+                    type: "textarea",
+                    framework: "native",
+                });
+                acc.push(el);
+                return acc;
+            }, [])),
+            Promise.resolve(root.querySelectorAll("[contenteditable='true']")).then((c) => Array.from(c).reduce((acc, el) => {
+                if (el.closest("[contenteditable='true']") !== el)
+                    return acc;
+                const framework = detectFramework(el);
+                if (!framework.includes("ProseMirror") && isSingleLine(el))
+                    return acc;
+                this.queryCache.push({
+                    element: el,
+                    type: "contenteditable",
+                    framework,
+                });
+                acc.push(el);
+                return acc;
+            }, [])),
+        ]).then((nodes) => nodes.flat());
+    }
+    canTrackSelection(doc) {
+        const element = doc.activeElement;
+        if (!(element instanceof HTMLElement))
+            return false;
+        if (element instanceof HTMLTextAreaElement) {
+            // filter single-line textareas as in queryNodes
+            const rows = parseInt(element.getAttribute("rows") || "2", 10);
+            return rows > 1;
+        }
+        if (element.isContentEditable) {
+            if (element.closest("[contenteditable='true']") !== element) {
+                return false;
+            }
+            const framework = detectFramework(element);
+            if (!framework.includes("ProseMirror") && isSingleLine(element)) {
+                return false; // skip single-line editors again
+            }
+            return true;
+        }
+        return false;
+    }
+    extractText(node) {
+        let content;
+        if (node instanceof HTMLIFrameElement) {
+            content = node.contentDocument?.body?.innerText ?? "";
+        }
+        else if (node instanceof HTMLTextAreaElement) {
+            const text = node.value.substring(node.selectionStart ?? 0, node.selectionEnd ?? 0);
+            content = text;
+        }
+        else {
+            content = node.innerText || node.textContent || "";
+        }
+        return content.trim();
+    }
+    // used to find absolute pos across all nodes in contenteditable, accounting for newlines
+    reconstructTextWithNewlines(element, range) {
+        let text = "";
+        const walker = document.createTreeWalker(element, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT, null);
+        let currentNode = walker.nextNode();
+        while (currentNode) {
+            if (range && currentNode === range.endContainer && currentNode.nodeType === Node.TEXT_NODE) {
+                text += currentNode.textContent?.substring(0, range.endOffset) ?? "";
+                break;
+            }
+            if (currentNode.nodeType === Node.TEXT_NODE) {
+                text += currentNode.textContent;
+            }
+            else if (currentNode.nodeName === "DIV" || currentNode.nodeName === "P") {
+                if (currentNode.previousSibling ||
+                    currentNode.parentElement !== element ||
+                    text.length > 0) {
+                    // prevent newline at start
+                    text += "\n";
+                }
+            }
+            currentNode = walker.nextNode();
+        }
+        return text;
+    }
+    async resolveInsertion(event, element) {
+        const activeElement = element.nodeType === Node.DOCUMENT_NODE
+            ? element.activeElement
+            : element;
+        if (!activeElement)
+            return null;
+        if (activeElement instanceof HTMLInputElement || activeElement instanceof HTMLTextAreaElement) {
+            return activeElement.selectionStart;
+        }
+        if (activeElement.isContentEditable) {
+            const selection = window.getSelection();
+            if (selection && selection.rangeCount > 0) {
+                const range = selection.getRangeAt(0);
+                const preCaretRange = range.cloneRange();
+                preCaretRange.selectNodeContents(activeElement);
+                preCaretRange.setEnd(range.startContainer, range.startOffset);
+                return this.reconstructTextWithNewlines(activeElement, preCaretRange).length;
+            }
+        }
+        return null;
+    }
+    async getSelectionRange(element) {
+        const activeElement = element.nodeType === Node.DOCUMENT_NODE
+            ? element.activeElement
+            : element;
+        if (!activeElement)
+            return null;
+        if (activeElement instanceof HTMLInputElement || activeElement instanceof HTMLTextAreaElement) {
+            return {
+                start: activeElement.selectionStart ?? 0,
+                end: activeElement.selectionEnd ?? 0,
+            };
+        }
+        if (activeElement.isContentEditable) {
+            const selection = activeElement.ownerDocument.defaultView?.getSelection();
+            if (selection && selection.rangeCount > 0) {
+                const range = selection.getRangeAt(0);
+                const preSelectionRange = range.cloneRange();
+                preSelectionRange.selectNodeContents(activeElement);
+                preSelectionRange.setEnd(range.startContainer, range.startOffset);
+                const start = this.reconstructTextWithNewlines(activeElement, preSelectionRange).length;
+                const end = start + selection.toString().length;
+                return { start, end };
+            }
+        }
+        return null;
+    }
+    setupSelectionTracking(tracker, doc) {
+        tracker.observe(doc);
+        return () => { };
+    }
+    initialize() {
+        // No-op for default strategy
+    }
+    cleanup() {
+        // No-op for default strategy
+    }
+}
+// ---------------------------------------------------------
+// Global clipboard tracker (runs on all pages via default capture)
+// - Records the last copy/cut text and source URL in storage
+// - msWord injection reads this on paste to display source page
+// ---------------------------------------------------------
+(function attachGlobalClipboardTracker() {
+    const w = window;
+    const chromeAny = globalThis.chrome;
+    const key = "__lastClipboard__";
+    const setLastClipboard = async (payload) => {
+        try {
+            if (chromeAny?.storage?.local) {
+                await new Promise((resolve) => chromeAny.storage.local.set({ [key]: payload }, () => resolve()));
+            }
+            else {
+                localStorage.setItem(key, JSON.stringify(payload));
+            }
+        }
+        catch { }
+    };
+    const truncate = (s, n = 1000) => (s.length > n ? s.slice(0, n) + "…" : s);
+    const handler = () => {
+        try {
+            const text = document.getSelection()?.toString() || "";
+            if (!text)
+                return;
+            setLastClipboard({
+                text: truncate(text),
+                url: location.href,
+                title: document.title,
+                ts: Date.now(),
+            });
+        }
+        catch { }
+    };
+    document.addEventListener("copy", handler, { capture: false });
+    document.addEventListener("cut", handler, { capture: false });
+})();
+// ---------------------------------------------------------
+// Global paste provenance logger (generic pages)
+// - Logs one concise line on paste using stored `__lastClipboard__`
+// - Skips known specialized domains to avoid duplicate logs
+// ---------------------------------------------------------
+(function attachDefaultPasteProvenanceLogger() {
+    try {
+        const host = location.hostname;
+        // Skip when specialized strategies handle paste logging themselves
+        if (/\.officeapps\.live\.com$/i.test(host) || /(^|\.)docs\.google\.com$/i.test(host)) {
+            return;
+        }
+        const w = window;
+        if (w.__default_paste_logger_attached)
+            return;
+        w.__default_paste_logger_attached = true;
+        const chromeAny = globalThis.chrome;
+        const key = "__lastClipboard__";
+        const getLastClipboard = async () => {
+            try {
+                if (chromeAny?.storage?.local) {
+                    return await new Promise((resolve) => chromeAny.storage.local.get([key], (items) => resolve(items?.[key] ?? null)));
+                }
+                const raw = localStorage.getItem(key);
+                return raw ? JSON.parse(raw) : null;
+            }
+            catch {
+                return null;
+            }
+        };
+        const truncate = (s, n = 200) => (s && s.length > n ? s.slice(0, n) + "…" : s || "");
+        document.addEventListener("paste", async (e) => {
+            try {
+                const pasted = e.clipboardData?.getData("text/plain") ?? "";
+                const meta = await getLastClipboard();
+                const parts = [];
+                parts.push(`[Clipboard] PASTE -> Default | pasted="${truncate(pasted)}" length=${pasted.length}`);
+                if (meta) {
+                    parts.push(`| from=${meta.url} | copied="${truncate(meta.text)}" srcAge=${Math.max(0, Date.now() - meta.ts)}ms`);
+                }
+                console.log(parts.join(" "));
+            }
+            catch {
+                // ignore
+            }
+        }, { capture: true });
+    }
+    catch {
+        // ignore
+    }
+})();
 
 
 // ============================================
@@ -1499,30 +2380,14 @@ window.ClipboardPanel = ClipboardPanel;
 // ============================================
 // index.js (main entry point)
 // ============================================
-/**
- * Main entry point for Word Capture Extension
- * Initializes the capture strategy and manager
- */
+
 
 // Log script load with detailed context
-console.log('[Word Capture] Script loaded!', new Date().toISOString());
-console.log('[Word Capture] Context:', window === window.top ? 'TOP FRAME' : 'IFRAME');
-console.log('[Word Capture] URL:', window.location.href);
-console.log('[Word Capture] Hostname:', window.location.hostname);
-console.log('[Word Capture] Document ready state:', document.readyState);
-// Log if we're in an iframe with useful info
-if (window !== window.top) {
-    console.log('[Word Capture] IFRAME DETECTED - This is where the editor should be!');
-    console.log('[Word Capture] Looking for .PageContent and contenteditable elements...');
-    // Immediate check for PageContent
-    const pageContentCheck = document.querySelector('.PageContent');
-    console.log('[Word Capture] .PageContent found:', !!pageContentCheck, pageContentCheck);
-    const editableCheck = document.querySelectorAll('[contenteditable="true"]');
-    console.log('[Word Capture] contenteditable elements found:', editableCheck.length);
-}
-// Initialize strategy and manager
-const wordStrategy = WordCaptureStrategy.instance;
-const captureManager = SimpleCaptureManager.instance;
+console.log('[Capture] Script loaded!', new Date().toISOString());
+console.log('[Capture] Context:', window === window.top ? 'TOP FRAME' : 'IFRAME');
+console.log('[Capture] URL:', window.location.href);
+console.log('[Capture] Hostname:', window.location.hostname);
+console.log('[Capture] Document ready state:', document.readyState);
 // Initialize UI panel in every frame
 // But only the iframe panel will be visible (top window panel is hidden via CSS)
 try {
@@ -1532,40 +2397,54 @@ try {
 catch (e) {
     console.warn('[Word Capture] Failed to init ClipboardPanel', e);
 }
-// Register strategy
+// Initialize strategies and manager
+const wordStrategy = WordCaptureStrategy.instance;
+const defaultStrategy = DefaultCaptureStrategy.instance;
+const googleDocsStrategy = GoogleDocsCapture.instance;
+const captureManager = SimpleCaptureManager.instance;
+// Register strategies
 captureManager.register(wordStrategy);
+captureManager.register(googleDocsStrategy);
+captureManager.register(defaultStrategy); // Register default strategy last
 // Auto-select and initialize if we match
 const selectedStrategy = captureManager.autoSelect();
 if (selectedStrategy) {
+    console.log('[Capture] Strategy selected:', selectedStrategy.constructor.name);
     // Initialize when DOM is ready
     if (document.readyState === 'loading') {
         document.addEventListener('DOMContentLoaded', () => {
+            console.log('[Capture] DOMContentLoaded, initializing strategy.');
+            selectedStrategy.initialize();
+            selectedStrategy.initialize();
             selectedStrategy.initialize();
         });
     }
     else {
+        console.log('[Capture] DOM already ready, initializing strategy.');
+        selectedStrategy.initialize();
+        selectedStrategy.initialize();
         selectedStrategy.initialize();
     }
 }
 // Cleanup on unload
 window.addEventListener('beforeunload', () => {
     if (selectedStrategy) {
-        selectedStrategy.cleanup();
+        // selectedStrategy.cleanup();
     }
 });
 // Export for debugging
-window.wordCapture = {
+window.captureDebug = {
     strategy: wordStrategy,
     manager: captureManager,
+    selectedStrategy: selectedStrategy,
     getEditor: () => wordStrategy.getEditor(),
     getDocument: () => wordStrategy.getDocument(),
     isActive: () => wordStrategy.isActive(),
     reinitialize: () => wordStrategy.initialize(),
     panel: window.wordCapturePanel || null
 };
-console.log('[Word Capture] Global wordCapture object created');
-console.log('[Word Capture] Script initialization complete');
-console.log('[Word Capture] Access via: window.wordCapture');
+console.log('[Capture] Script initialization complete');
+console.log('[Capture] Access via: window.captureDebug');
 
 
 })();

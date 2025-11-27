@@ -12,9 +12,13 @@ const distDir = path.join(__dirname, 'dist');
 const outputFile = path.join(__dirname, 'content-script.js');
 
 // Read all the compiled files in order
+const loggerJs = fs.readFileSync(path.join(distDir, 'capture', 'logger.js'), 'utf8');
 const typesJs = fs.readFileSync(path.join(distDir, 'capture', 'types.js'), 'utf8');
 const captureManagerJs = fs.readFileSync(path.join(distDir, 'capture', 'CaptureManager.js'), 'utf8');
 const wordStrategyJs = fs.readFileSync(path.join(distDir, 'capture', 'WordCaptureStrategy.js'), 'utf8');
+const googleDocsStrategyJs = fs.readFileSync(path.join(distDir, 'capture', 'GoogleDocsCapture.js'), 'utf8');
+const defaultStrategyJs = fs.readFileSync(path.join(distDir, 'capture', 'DefaultCaptureStrategy.js'), 'utf8');
+
 // UI panel
 let clipboardPanelJs = '';
 try {
@@ -53,6 +57,11 @@ const bundled = `
     'use strict';
 
 // ============================================
+// logger.js
+// ============================================
+${stripModuleSyntax(loggerJs)}
+
+// ============================================
 // types.js
 // ============================================
 ${stripModuleSyntax(typesJs)}
@@ -66,6 +75,16 @@ ${stripModuleSyntax(captureManagerJs)}
 // WordCaptureStrategy.js
 // ============================================
 ${stripModuleSyntax(wordStrategyJs)}
+
+// ============================================
+// GoogleDocsCapture.js
+// ============================================
+${stripModuleSyntax(googleDocsStrategyJs)}
+
+// ============================================
+// DefaultCaptureStrategy.js
+// ============================================
+${stripModuleSyntax(defaultStrategyJs)}
 
 // ============================================
 // ClipboardPanel.js
