@@ -250,15 +250,260 @@ export class DefaultCaptureStrategy implements CaptureStrategy {
 
   public setupSelectionTracking(tracker: DOMObserver<any, any>, doc: Document): () => void {
     tracker.observe(doc);
+    // Attach copy/paste/cut event listeners
+    this.attachClipboardListeners(doc);
+    // Attach input listeners for live typing display
+    this.attachInputListeners(doc);
     return () => {};
   }
 
   public initialize(): void {
-    // No-op for default strategy
+    // Add visual indicator after a short delay to ensure DOM is ready
+    setTimeout(() => this.addVisualIndicator(), 500);
   }
 
   public cleanup(): void {
     // No-op for default strategy
+  }
+
+  // ============================================================================
+  // Clipboard Event Handling (Copy/Paste/Cut)
+  // ============================================================================
+
+  private attachClipboardListeners(doc: Document): void {
+    const pasteHandler = (e: Event) => this.handleClipboardEvent(e as ClipboardEvent);
+    const copyHandler = (e: Event) => this.handleClipboardEvent(e as ClipboardEvent);
+    const cutHandler = (e: Event) => this.handleClipboardEvent(e as ClipboardEvent);
+
+    doc.addEventListener('paste', pasteHandler, true);
+    doc.addEventListener('copy', copyHandler, true);
+    doc.addEventListener('cut', cutHandler, true);
+
+    console.log('[DefaultCapture] Attached clipboard event listeners');
+  }
+
+  private handleClipboardEvent(event: ClipboardEvent): void {
+    const clipboardData = event.clipboardData;
+    let data = '';
+
+    if (clipboardData) {
+      const text = clipboardData.getData('text/plain');
+      const html = clipboardData.getData('text/html');
+      data = text ? `text: ${text.substring(0, 100)}` : `html length: ${html.length}`;
+    }
+
+    console.log('[DefaultCapture] Clipboard event:', event.type, data);
+
+    // On paste, try to read stored clipboard metadata
+    if (event.type === 'paste') {
+      const KEY = '__lastClipboard__';
+      const chromeApi: any = (globalThis as any).chrome || (window as any).chrome || null;
+      const pastedText = clipboardData ? (clipboardData.getData('text/plain') || '') : '';
+
+      const handleSrc = (src: any) => {
+        try {
+          if (!src) return;
+
+          const isExternalSource = src.url && !src.url.includes(location.hostname);
+          const age = src.ts ? `${Math.max(0, Date.now() - src.ts)}ms` : 'unknown';
+          const title = src.title || '';
+          const url = src.url || '';
+          const copiedText = src.text || '';
+
+          console.log(
+            `%c[Clipboard Source Info]%c\n` +
+            `From: ${url || 'unknown'}\n` +
+            `Title: %c${title}%c\n` +
+            `Copied: "${copiedText}"\n` +
+            `Pasted: "${pastedText}"\n` +
+            `Age: ${age}`,
+            'color: #9333ea; font-weight: bold; font-size: 14px;',
+            'color: inherit;',
+            'text-decoration: underline; font-weight: bold;',
+            'text-decoration: none; font-weight: normal;'
+          );
+
+          if (isExternalSource) {
+            const panel = (window as any).wordCapturePanel;
+            if (panel && typeof panel.addClipboardSource === 'function') {
+              panel.addClipboardSource({
+                url,
+                title,
+                copied: copiedText,
+                pasted: pastedText,
+                age,
+                timestamp: Date.now()
+              });
+            }
+          }
+        } catch (e) {
+          console.log('[DefaultCapture] Error handling clipboard source:', e);
+        }
+      };
+
+      if (chromeApi?.storage?.local?.get) {
+        chromeApi.storage.local.get([KEY], (res: any) => {
+          const src = res && res[KEY] ? res[KEY] : null;
+          handleSrc(src);
+
+          if (!src) {
+            try {
+              const raw = localStorage.getItem(KEY);
+              handleSrc(raw ? JSON.parse(raw) : null);
+            } catch (e) {}
+          }
+        });
+      } else {
+        try {
+          const raw = localStorage.getItem(KEY);
+          handleSrc(raw ? JSON.parse(raw) : null);
+        } catch (e) {}
+      }
+    }
+
+    // Handle copy/cut - store metadata
+    if (event.type === 'copy' || event.type === 'cut') {
+      this.handleCopyCutEvent(event);
+    }
+  }
+
+  private handleCopyCutEvent(event: ClipboardEvent): void {
+    try {
+      const clipboardData = event.clipboardData;
+      let text = '';
+
+      if (clipboardData) {
+        text = clipboardData.getData('text/plain') || '';
+      }
+
+      if (!text) {
+        const sel = document.getSelection ? document.getSelection() : null;
+        text = sel ? sel.toString() : '';
+      }
+
+      const payload = {
+        text: (text || '').slice(0, 2000),
+        url: location.href,
+        title: document.title || '',
+        ts: Date.now()
+      };
+
+      this.storeLastClipboard(payload);
+
+      console.log(
+        `[clipboard-writer] stored __lastClipboard__ -> url=${payload.url} title="${payload.title}" textSnippet="${(payload.text || '').slice(0, 200)}"`
+      );
+    } catch (e) {
+      console.log('[DefaultCapture] Error in copy/cut handler:', e);
+    }
+  }
+
+  private storeLastClipboard(payload: { text: string; url: string; title: string; ts: number }): void {
+    const KEY = '__lastClipboard__';
+    try {
+      const chromeApi: any = (globalThis as any).chrome || (window as any).chrome || null;
+      if (chromeApi?.storage?.local?.set) {
+        const obj: any = {};
+        obj[KEY] = payload;
+        chromeApi.storage.local.set(obj, () => {});
+      }
+    } catch (e) {}
+
+    try {
+      localStorage.setItem(KEY, JSON.stringify(payload));
+    } catch (e) {}
+  }
+
+  // ============================================================================
+  // Visual Indicator (Green Border)
+  // ============================================================================
+
+  private addVisualIndicator(): void {
+    console.log('[DefaultCapture] Adding visual indicator');
+    
+    // Find all contenteditable elements and textareas that we're tracking
+    const editableElements = document.querySelectorAll('[contenteditable="true"], textarea');
+    
+    let indicatorAdded = false;
+    
+    editableElements.forEach((element) => {
+      const el = element as HTMLElement;
+      
+      // Skip single-line editors
+      if (el instanceof HTMLTextAreaElement) {
+        const rows = parseInt(el.getAttribute('rows') || '2', 10);
+        if (rows <= 1) return;
+      } else if (el.isContentEditable) {
+        // Skip if it's nested inside another contenteditable
+        if (el.closest('[contenteditable="true"]') !== el) return;
+        
+        // Skip single-line contenteditable
+        const style = getComputedStyle(el);
+        const lineHeight = parseFloat(style.lineHeight) || 16;
+        const singleLineHeight = lineHeight * 1.5;
+        if (el.clientHeight <= singleLineHeight) return;
+      }
+      
+      // Apply green border to indicate extension is active
+      el.style.border = '3px solid #00a67e';
+      el.style.boxShadow = '0 0 10px rgba(0, 166, 126, 0.3)';
+      el.style.outline = 'none';
+      
+      // Add focus/blur effects
+      const focusHandler = () => {
+        el.style.boxShadow = '0 0 15px rgba(0, 166, 126, 0.5)';
+      };
+      const blurHandler = () => {
+        el.style.boxShadow = '0 0 10px rgba(0, 166, 126, 0.3)';
+      };
+      
+      el.addEventListener('focus', focusHandler);
+      el.addEventListener('blur', blurHandler);
+      
+      indicatorAdded = true;
+    });
+    
+    if (indicatorAdded) {
+      console.log('[DefaultCapture] Visual indicator added to editable elements');
+    } else {
+      console.log('[DefaultCapture] No suitable elements found for visual indicator');
+    }
+  }
+
+  private attachInputListeners(doc: Document): void {
+    // Attach input listeners to track typing
+    const inputHandler = (e: Event) => this.handleInputEvent(e);
+    
+    doc.addEventListener('input', inputHandler, true);
+    doc.addEventListener('keyup', inputHandler, true);
+    
+    console.log('[DefaultCapture] Attached input event listeners for typing display');
+  }
+
+  private handleInputEvent(event: Event): void {
+    const target = event.target as HTMLElement;
+    
+    // Check if target is a tracked editor
+    if (target instanceof HTMLTextAreaElement) {
+      const rows = parseInt(target.getAttribute('rows') || '2', 10);
+      if (rows <= 1) return;
+      this.updateTypingDisplay(target.value);
+    } else if (target.isContentEditable) {
+      if (target.closest('[contenteditable="true"]') !== target) return;
+      const text = target.innerText || target.textContent || '';
+      this.updateTypingDisplay(text);
+    }
+  }
+
+  private updateTypingDisplay(text: string): void {
+    try {
+      const panel = (window as any).wordCapturePanel;
+      if (panel && typeof panel.updateTypedText === 'function') {
+        panel.updateTypedText(text);
+      }
+    } catch (e) {
+      console.log('[DefaultCapture] Error updating typing display:', e);
+    }
   }
 }
 

@@ -1,6 +1,6 @@
 // ============================================
 // Word Capture Extension - Bundled Content Script
-// Generated: 2025-11-27T06:42:29.924Z
+// Generated: 2025-11-27T09:45:16.979Z
 // ============================================
 
 (function() {
@@ -1115,6 +1115,8 @@ class GoogleDocsCapture {
                 captureManager.processCaptureEvent(event);
             }
             this.previousText = newText;
+            // Update live typing display in panel
+            this.updateTypingDisplay(newText);
             //console.log("✅ [GoogleDocs] Text state updated");
         }
         else {
@@ -1182,6 +1184,17 @@ class GoogleDocsCapture {
      */
     setupSelectionTracking(tracker, doc) {
         //console.log("🚀 [GoogleDocs] setupSelectionTracking() initialized");
+        // Attach copy/paste/cut event listeners
+        this.attachClipboardListeners(doc);
+        // Add visual indicator (green border)
+        this.addVisualIndicator();
+        // Extract and display initial text
+        setTimeout(() => {
+            const initialText = this.extractText();
+            this.previousText = initialText;
+            this.updateTypingDisplay(initialText);
+            console.log('[GoogleDocs] Initial text extracted and displayed:', initialText.length, 'chars');
+        }, 1000);
         const onChangeDetected = () => {
             // console.log("🔔 [GoogleDocs] Change detected in DOM, scheduling processChanges...");
             if (this.changeTimeout)
@@ -1294,6 +1307,180 @@ class GoogleDocsCapture {
     }
     async resolveInsertion(event, doc) {
         return null;
+    }
+    // ============================================================================
+    // Clipboard Event Handling (Copy/Paste/Cut)
+    // ============================================================================
+    attachClipboardListeners(doc) {
+        const pasteHandler = (e) => this.handleClipboardEvent(e);
+        const copyHandler = (e) => this.handleClipboardEvent(e);
+        const cutHandler = (e) => this.handleClipboardEvent(e);
+        doc.addEventListener('paste', pasteHandler, true);
+        doc.addEventListener('copy', copyHandler, true);
+        doc.addEventListener('cut', cutHandler, true);
+        console.log('[GoogleDocs] Attached clipboard event listeners to document');
+        logger.debug('Attached clipboard event listeners to Google Docs');
+    }
+    handleClipboardEvent(event) {
+        console.log('[GoogleDocs] Clipboard event detected:', event.type);
+        const clipboardData = event.clipboardData;
+        let data = '';
+        if (clipboardData) {
+            const text = clipboardData.getData('text/plain');
+            const html = clipboardData.getData('text/html');
+            data = text ? `text: ${text.substring(0, 100)}` : `html length: ${html.length}`;
+        }
+        console.log('[GoogleDocs] Clipboard data:', data);
+        logger.debug({ type: event.type, data }, 'Clipboard event');
+        // On paste, try to read stored clipboard metadata
+        if (event.type === 'paste') {
+            const KEY = '__lastClipboard__';
+            const chromeApi = globalThis.chrome || window.chrome || null;
+            const pastedText = clipboardData ? (clipboardData.getData('text/plain') || '') : '';
+            const handleSrc = (src) => {
+                try {
+                    if (!src)
+                        return;
+                    const isExternalSource = src.url && !src.url.includes(location.hostname);
+                    const age = src.ts ? `${Math.max(0, Date.now() - src.ts)}ms` : 'unknown';
+                    const title = src.title || '';
+                    const url = src.url || '';
+                    const copiedText = src.text || '';
+                    console.log(`%c[Clipboard Source Info]%c\n` +
+                        `From: ${url || 'unknown'}\n` +
+                        `Title: %c${title}%c\n` +
+                        `Copied: "${copiedText}"\n` +
+                        `Pasted: "${pastedText}"\n` +
+                        `Age: ${age}`, 'color: #4285f4; font-weight: bold; font-size: 14px;', 'color: inherit;', 'text-decoration: underline; font-weight: bold;', 'text-decoration: none; font-weight: normal;');
+                    if (isExternalSource) {
+                        const panel = window.wordCapturePanel;
+                        if (panel && typeof panel.addClipboardSource === 'function') {
+                            panel.addClipboardSource({
+                                url,
+                                title,
+                                copied: copiedText,
+                                pasted: pastedText,
+                                age,
+                                timestamp: Date.now()
+                            });
+                        }
+                    }
+                }
+                catch (e) {
+                    logger.debug(e, 'Error handling clipboard source');
+                }
+            };
+            if (chromeApi?.storage?.local?.get) {
+                chromeApi.storage.local.get([KEY], (res) => {
+                    const src = res && res[KEY] ? res[KEY] : null;
+                    handleSrc(src);
+                    if (!src) {
+                        try {
+                            const raw = localStorage.getItem(KEY);
+                            handleSrc(raw ? JSON.parse(raw) : null);
+                        }
+                        catch (e) { }
+                    }
+                });
+            }
+            else {
+                try {
+                    const raw = localStorage.getItem(KEY);
+                    handleSrc(raw ? JSON.parse(raw) : null);
+                }
+                catch (e) { }
+            }
+        }
+        // Handle copy/cut - store metadata
+        if (event.type === 'copy' || event.type === 'cut') {
+            this.handleCopyCutEvent(event);
+        }
+    }
+    handleCopyCutEvent(event) {
+        try {
+            const clipboardData = event.clipboardData;
+            let text = '';
+            if (clipboardData) {
+                text = clipboardData.getData('text/plain') || '';
+            }
+            if (!text) {
+                const sel = document.getSelection ? document.getSelection() : null;
+                text = sel ? sel.toString() : '';
+            }
+            const payload = {
+                text: (text || '').slice(0, 2000),
+                url: location.href,
+                title: document.title || '',
+                ts: Date.now()
+            };
+            this.storeLastClipboard(payload);
+            console.log(`[clipboard-writer] stored __lastClipboard__ -> url=${payload.url} title="${payload.title}" textSnippet="${(payload.text || '').slice(0, 200)}"`);
+        }
+        catch (e) {
+            logger.debug(e, 'Error in copy/cut handler');
+        }
+    }
+    storeLastClipboard(payload) {
+        const KEY = '__lastClipboard__';
+        try {
+            const chromeApi = globalThis.chrome || window.chrome || null;
+            if (chromeApi?.storage?.local?.set) {
+                const obj = {};
+                obj[KEY] = payload;
+                chromeApi.storage.local.set(obj, () => { });
+            }
+        }
+        catch (e) { }
+        try {
+            localStorage.setItem(KEY, JSON.stringify(payload));
+        }
+        catch (e) { }
+    }
+    // ============================================================================
+    // Visual Indicator (Green Border)
+    // ============================================================================
+    addVisualIndicator() {
+        logger.debug('Adding visual indicator to Google Docs');
+        // Find the main Google Docs editor container
+        const editorContainer = document.querySelector('.kix-appview-editor');
+        if (!editorContainer) {
+            logger.debug('Could not find Google Docs editor container');
+            return;
+        }
+        logger.debug('Found Google Docs editor container, applying border');
+        // Apply green border to indicate extension is active
+        editorContainer.style.border = '3px solid #00a67e';
+        editorContainer.style.boxShadow = '0 0 10px rgba(0, 166, 126, 0.3)';
+        editorContainer.style.outline = 'none';
+        // Add focus/blur effects
+        const focusHandler = () => {
+            editorContainer.style.boxShadow = '0 0 15px rgba(0, 166, 126, 0.5)';
+        };
+        const blurHandler = () => {
+            editorContainer.style.boxShadow = '0 0 10px rgba(0, 166, 126, 0.3)';
+        };
+        document.addEventListener('focusin', focusHandler);
+        document.addEventListener('focusout', blurHandler);
+        logger.debug('Visual indicator added successfully');
+    }
+    updateTypingDisplay(text) {
+        try {
+            console.log('[GoogleDocs] updateTypingDisplay called, text length:', text.length);
+            const panel = window.wordCapturePanel;
+            console.log('[GoogleDocs] Panel exists:', !!panel, 'updateTypedText exists:', !!(panel?.updateTypedText));
+            if (panel && typeof panel.updateTypedText === 'function') {
+                panel.updateTypedText(text);
+                console.log('[GoogleDocs] Successfully updated typing display in panel');
+                logger.debug('Updated typing display in panel', { textLength: text.length });
+            }
+            else {
+                console.warn('[GoogleDocs] Panel or updateTypedText method not available');
+            }
+        }
+        catch (e) {
+            console.error('[GoogleDocs] Error updating typing display:', e);
+            logger.debug(e, 'Error updating typing display');
+        }
     }
 }
 GoogleDocsCapture.instances = new Map();
@@ -1697,13 +1884,226 @@ class DefaultCaptureStrategy {
     }
     setupSelectionTracking(tracker, doc) {
         tracker.observe(doc);
+        // Attach copy/paste/cut event listeners
+        this.attachClipboardListeners(doc);
+        // Attach input listeners for live typing display
+        this.attachInputListeners(doc);
         return () => { };
     }
     initialize() {
-        // No-op for default strategy
+        // Add visual indicator after a short delay to ensure DOM is ready
+        setTimeout(() => this.addVisualIndicator(), 500);
     }
     cleanup() {
         // No-op for default strategy
+    }
+    // ============================================================================
+    // Clipboard Event Handling (Copy/Paste/Cut)
+    // ============================================================================
+    attachClipboardListeners(doc) {
+        const pasteHandler = (e) => this.handleClipboardEvent(e);
+        const copyHandler = (e) => this.handleClipboardEvent(e);
+        const cutHandler = (e) => this.handleClipboardEvent(e);
+        doc.addEventListener('paste', pasteHandler, true);
+        doc.addEventListener('copy', copyHandler, true);
+        doc.addEventListener('cut', cutHandler, true);
+        console.log('[DefaultCapture] Attached clipboard event listeners');
+    }
+    handleClipboardEvent(event) {
+        const clipboardData = event.clipboardData;
+        let data = '';
+        if (clipboardData) {
+            const text = clipboardData.getData('text/plain');
+            const html = clipboardData.getData('text/html');
+            data = text ? `text: ${text.substring(0, 100)}` : `html length: ${html.length}`;
+        }
+        console.log('[DefaultCapture] Clipboard event:', event.type, data);
+        // On paste, try to read stored clipboard metadata
+        if (event.type === 'paste') {
+            const KEY = '__lastClipboard__';
+            const chromeApi = globalThis.chrome || window.chrome || null;
+            const pastedText = clipboardData ? (clipboardData.getData('text/plain') || '') : '';
+            const handleSrc = (src) => {
+                try {
+                    if (!src)
+                        return;
+                    const isExternalSource = src.url && !src.url.includes(location.hostname);
+                    const age = src.ts ? `${Math.max(0, Date.now() - src.ts)}ms` : 'unknown';
+                    const title = src.title || '';
+                    const url = src.url || '';
+                    const copiedText = src.text || '';
+                    console.log(`%c[Clipboard Source Info]%c\n` +
+                        `From: ${url || 'unknown'}\n` +
+                        `Title: %c${title}%c\n` +
+                        `Copied: "${copiedText}"\n` +
+                        `Pasted: "${pastedText}"\n` +
+                        `Age: ${age}`, 'color: #9333ea; font-weight: bold; font-size: 14px;', 'color: inherit;', 'text-decoration: underline; font-weight: bold;', 'text-decoration: none; font-weight: normal;');
+                    if (isExternalSource) {
+                        const panel = window.wordCapturePanel;
+                        if (panel && typeof panel.addClipboardSource === 'function') {
+                            panel.addClipboardSource({
+                                url,
+                                title,
+                                copied: copiedText,
+                                pasted: pastedText,
+                                age,
+                                timestamp: Date.now()
+                            });
+                        }
+                    }
+                }
+                catch (e) {
+                    console.log('[DefaultCapture] Error handling clipboard source:', e);
+                }
+            };
+            if (chromeApi?.storage?.local?.get) {
+                chromeApi.storage.local.get([KEY], (res) => {
+                    const src = res && res[KEY] ? res[KEY] : null;
+                    handleSrc(src);
+                    if (!src) {
+                        try {
+                            const raw = localStorage.getItem(KEY);
+                            handleSrc(raw ? JSON.parse(raw) : null);
+                        }
+                        catch (e) { }
+                    }
+                });
+            }
+            else {
+                try {
+                    const raw = localStorage.getItem(KEY);
+                    handleSrc(raw ? JSON.parse(raw) : null);
+                }
+                catch (e) { }
+            }
+        }
+        // Handle copy/cut - store metadata
+        if (event.type === 'copy' || event.type === 'cut') {
+            this.handleCopyCutEvent(event);
+        }
+    }
+    handleCopyCutEvent(event) {
+        try {
+            const clipboardData = event.clipboardData;
+            let text = '';
+            if (clipboardData) {
+                text = clipboardData.getData('text/plain') || '';
+            }
+            if (!text) {
+                const sel = document.getSelection ? document.getSelection() : null;
+                text = sel ? sel.toString() : '';
+            }
+            const payload = {
+                text: (text || '').slice(0, 2000),
+                url: location.href,
+                title: document.title || '',
+                ts: Date.now()
+            };
+            this.storeLastClipboard(payload);
+            console.log(`[clipboard-writer] stored __lastClipboard__ -> url=${payload.url} title="${payload.title}" textSnippet="${(payload.text || '').slice(0, 200)}"`);
+        }
+        catch (e) {
+            console.log('[DefaultCapture] Error in copy/cut handler:', e);
+        }
+    }
+    storeLastClipboard(payload) {
+        const KEY = '__lastClipboard__';
+        try {
+            const chromeApi = globalThis.chrome || window.chrome || null;
+            if (chromeApi?.storage?.local?.set) {
+                const obj = {};
+                obj[KEY] = payload;
+                chromeApi.storage.local.set(obj, () => { });
+            }
+        }
+        catch (e) { }
+        try {
+            localStorage.setItem(KEY, JSON.stringify(payload));
+        }
+        catch (e) { }
+    }
+    // ============================================================================
+    // Visual Indicator (Green Border)
+    // ============================================================================
+    addVisualIndicator() {
+        console.log('[DefaultCapture] Adding visual indicator');
+        // Find all contenteditable elements and textareas that we're tracking
+        const editableElements = document.querySelectorAll('[contenteditable="true"], textarea');
+        let indicatorAdded = false;
+        editableElements.forEach((element) => {
+            const el = element;
+            // Skip single-line editors
+            if (el instanceof HTMLTextAreaElement) {
+                const rows = parseInt(el.getAttribute('rows') || '2', 10);
+                if (rows <= 1)
+                    return;
+            }
+            else if (el.isContentEditable) {
+                // Skip if it's nested inside another contenteditable
+                if (el.closest('[contenteditable="true"]') !== el)
+                    return;
+                // Skip single-line contenteditable
+                const style = getComputedStyle(el);
+                const lineHeight = parseFloat(style.lineHeight) || 16;
+                const singleLineHeight = lineHeight * 1.5;
+                if (el.clientHeight <= singleLineHeight)
+                    return;
+            }
+            // Apply green border to indicate extension is active
+            el.style.border = '3px solid #00a67e';
+            el.style.boxShadow = '0 0 10px rgba(0, 166, 126, 0.3)';
+            el.style.outline = 'none';
+            // Add focus/blur effects
+            const focusHandler = () => {
+                el.style.boxShadow = '0 0 15px rgba(0, 166, 126, 0.5)';
+            };
+            const blurHandler = () => {
+                el.style.boxShadow = '0 0 10px rgba(0, 166, 126, 0.3)';
+            };
+            el.addEventListener('focus', focusHandler);
+            el.addEventListener('blur', blurHandler);
+            indicatorAdded = true;
+        });
+        if (indicatorAdded) {
+            console.log('[DefaultCapture] Visual indicator added to editable elements');
+        }
+        else {
+            console.log('[DefaultCapture] No suitable elements found for visual indicator');
+        }
+    }
+    attachInputListeners(doc) {
+        // Attach input listeners to track typing
+        const inputHandler = (e) => this.handleInputEvent(e);
+        doc.addEventListener('input', inputHandler, true);
+        doc.addEventListener('keyup', inputHandler, true);
+        console.log('[DefaultCapture] Attached input event listeners for typing display');
+    }
+    handleInputEvent(event) {
+        const target = event.target;
+        // Check if target is a tracked editor
+        if (target instanceof HTMLTextAreaElement) {
+            const rows = parseInt(target.getAttribute('rows') || '2', 10);
+            if (rows <= 1)
+                return;
+            this.updateTypingDisplay(target.value);
+        }
+        else if (target.isContentEditable) {
+            if (target.closest('[contenteditable="true"]') !== target)
+                return;
+            const text = target.innerText || target.textContent || '';
+            this.updateTypingDisplay(text);
+        }
+    }
+    updateTypingDisplay(text) {
+        try {
+            const panel = window.wordCapturePanel;
+            if (panel && typeof panel.updateTypedText === 'function') {
+                panel.updateTypedText(text);
+            }
+        }
+        catch (e) {
+            console.log('[DefaultCapture] Error updating typing display:', e);
+        }
     }
 }
 // ---------------------------------------------------------
@@ -1846,13 +2246,19 @@ class ClipboardPanel {
             flexDirection: 'column',
             overflow: 'hidden'
         });
-        // HIDE panel if this is the TOP window (we only want iframe panel visible)
-        if (window === window.top) {
+        // Show panel in iframes OR in top window for non-Word sites
+        // (Word Online uses iframes, so we hide top window panel there)
+        const isWordOnline = window.location.hostname.includes('office.com') ||
+            window.location.hostname.includes('officeapps.live.com') ||
+            window.location.hostname.includes('sharepoint.com');
+        if (window === window.top && isWordOnline) {
+            // Hide panel in Word's top window (iframe will have it)
             this.container.style.display = 'none';
-            console.log('[ClipboardPanel] Hiding panel in top window');
+            console.log('[ClipboardPanel] Hiding panel in Word top window');
         }
         else {
-            console.log('[ClipboardPanel] Showing panel in iframe');
+            // Show panel in all other cases (iframes, or non-Word top windows)
+            console.log('[ClipboardPanel] Showing panel in', window === window.top ? 'top window' : 'iframe');
         }
         const header = document.createElement('div');
         Object.assign(header.style, {
@@ -2125,11 +2531,13 @@ class ClipboardPanel {
     }
     // Update live typing display with highlighted pasted text
     updateTypedText(text) {
+        console.log('[ClipboardPanel] updateTypedText called with text length:', text?.length || 0);
         this.currentTypedText = text;
         if (!text || text.length === 0) {
-            this.typingDisplay.innerHTML = '<span style="color: #9ca3af; font-style: italic;">Waiting for typing in Word...</span>';
+            this.typingDisplay.innerHTML = '<span style="color: #9ca3af; font-style: italic;">Waiting for typing...</span>';
             return;
         }
+        console.log('[ClipboardPanel] Setting text in panel:', text.substring(0, 100));
         // Clear and rebuild with highlighting
         this.typingDisplay.innerHTML = '';
         if (this.pastedTexts.length === 0) {
@@ -2302,10 +2710,12 @@ class ClipboardPanel {
     }
     // Add pasted content with yellow highlight
     addClipboardSource(info) {
+        console.log('[ClipboardPanel] addClipboardSource called with:', info);
         // Track this pasted text for highlighting in live typing section
         if (info.pasted && info.pasted.trim()) {
             const pastedText = info.pasted.trim();
             this.pastedTexts.push(pastedText);
+            console.log('[ClipboardPanel] Added pasted text to tracking:', pastedText.substring(0, 50));
             // Store metadata for tooltip
             this.pastedMetadata.set(pastedText, {
                 url: info.url || 'Unknown source',

@@ -65,12 +65,19 @@ export class ClipboardPanel {
       overflow: 'hidden'
     });
     
-    // HIDE panel if this is the TOP window (we only want iframe panel visible)
-    if (window === window.top) {
+    // Show panel in iframes OR in top window for non-Word sites
+    // (Word Online uses iframes, so we hide top window panel there)
+    const isWordOnline = window.location.hostname.includes('office.com') || 
+                         window.location.hostname.includes('officeapps.live.com') ||
+                         window.location.hostname.includes('sharepoint.com');
+    
+    if (window === window.top && isWordOnline) {
+      // Hide panel in Word's top window (iframe will have it)
       this.container.style.display = 'none';
-      console.log('[ClipboardPanel] Hiding panel in top window');
+      console.log('[ClipboardPanel] Hiding panel in Word top window');
     } else {
-      console.log('[ClipboardPanel] Showing panel in iframe');
+      // Show panel in all other cases (iframes, or non-Word top windows)
+      console.log('[ClipboardPanel] Showing panel in', window === window.top ? 'top window' : 'iframe');
     }
 
     const header = document.createElement('div');
@@ -373,12 +380,15 @@ export class ClipboardPanel {
 
   // Update live typing display with highlighted pasted text
   updateTypedText(text: string) {
+    console.log('[ClipboardPanel] updateTypedText called with text length:', text?.length || 0);
     this.currentTypedText = text;
     
     if (!text || text.length === 0) {
-      this.typingDisplay.innerHTML = '<span style="color: #9ca3af; font-style: italic;">Waiting for typing in Word...</span>';
+      this.typingDisplay.innerHTML = '<span style="color: #9ca3af; font-style: italic;">Waiting for typing...</span>';
       return;
     }
+    
+    console.log('[ClipboardPanel] Setting text in panel:', text.substring(0, 100));
     
     // Clear and rebuild with highlighting
     this.typingDisplay.innerHTML = '';
@@ -574,10 +584,13 @@ export class ClipboardPanel {
 
   // Add pasted content with yellow highlight
   addClipboardSource(info: ClipboardSourceInfo) {
+    console.log('[ClipboardPanel] addClipboardSource called with:', info);
+    
     // Track this pasted text for highlighting in live typing section
     if (info.pasted && info.pasted.trim()) {
       const pastedText = info.pasted.trim();
       this.pastedTexts.push(pastedText);
+      console.log('[ClipboardPanel] Added pasted text to tracking:', pastedText.substring(0, 50));
       // Store metadata for tooltip
       this.pastedMetadata.set(pastedText, {
         url: info.url || 'Unknown source',
